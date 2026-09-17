@@ -44,6 +44,11 @@ This MCP server consists of:
 FFmpeg is bundled automatically via the `ffmpeg-static` npm package — no manual installation needed. You can point the `FFMPEG_PATH` environment variable at your own binary to override it.
 
 ## Installation
+### npx
+   ```bash
+   npx mcp-whatsapp-web
+   ```
+
 
 ### Manual Installation
 
@@ -162,9 +167,9 @@ This launches the MCP Inspector tool, which provides a web interface for testing
    {
      "mcpServers": {
        "whatsapp": {
-         "command": "node",
+         "command": "npx",
          "args": [
-           "PATH_TO/dist/index.js"
+           "mcp-whatsapp-web"
          ]
        }
      }
