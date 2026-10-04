@@ -62,7 +62,7 @@
     "zod": "^4.4.3",
     "@whiskeysockets/baileys": "7.0.0-rc14",
     "better-sqlite3": "12.8.0",
-    "link-preview-js": "^5.0.0"
+    "link-preview-js": "^3.2.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
