@@ -102,7 +102,7 @@ export class WhatsAppMcpServer {
         await this.startHttpTransport(extraHttpPort);
       }
     } else {
-      await this.startHttpTransport(Number(process.env.MCP_HTTP_PORT || 3001));
+      await this.startHttpTransport(Number(process.env.MCP_HTTP_PORT || process.env.PORT || 3001));
     }
 
     if (this.stopping) {
@@ -168,9 +168,12 @@ export class WhatsAppMcpServer {
     // Bind to localhost only by default: the endpoint exposes a personal
     // WhatsApp session. Enable MCP_OAUTH=true to require OAuth bearer tokens.
     const host = process.env.MCP_HTTP_HOST || '127.0.0.1';
-    if (!['127.0.0.1', '::1', 'localhost'].includes(host)) throw new Error('Bind MCP to loopback and use an authenticated HTTPS tunnel.');
-    if (process.env.MCP_OAUTH !== 'true') throw new Error('HTTP transport requires MCP_OAUTH=true and owner authentication.');
     const publicUrl = process.env.MCP_PUBLIC_URL;
+    const remoteBindAllowed = host === '0.0.0.0' && Boolean(publicUrl) && process.env.MCP_OAUTH === 'true';
+    if (!['127.0.0.1', '::1', 'localhost'].includes(host) && !remoteBindAllowed) {
+      throw new Error('Remote bind requires 0.0.0.0, MCP_PUBLIC_URL and MCP_OAUTH=true.');
+    }
+    if (process.env.MCP_OAUTH !== 'true') throw new Error('HTTP transport requires MCP_OAUTH=true and owner authentication.');
     if (publicUrl && (new URL(publicUrl).protocol !== 'https:' || process.env.MCP_OAUTH !== 'true')) throw new Error('Remote MCP requires HTTPS and OAuth.');
 
     // Optional OAuth layer: the server acts as its own authorization server,
