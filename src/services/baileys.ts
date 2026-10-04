@@ -178,7 +178,7 @@ export class BaileysService implements WhatsAppBackend {
         },
       },
       logger: log,
-      browser: process.platform === 'win32' ? Browsers.windows('Desktop') : Browsers.macOS('Desktop'),
+      browser: process.platform === 'win32' ? Browsers.windows('Chrome') : Browsers.macOS('Chrome'),
       syncFullHistory: true,
       markOnlineOnConnect: false,
       connectTimeoutMs: 30_000,
