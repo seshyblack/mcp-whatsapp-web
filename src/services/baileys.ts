@@ -181,6 +181,7 @@ export class BaileysService implements WhatsAppBackend {
       browser: process.platform === 'win32' ? Browsers.windows('Chrome') : Browsers.macOS('Chrome'),
       syncFullHistory: true,
       markOnlineOnConnect: false,
+      generateHighQualityLinkPreview: true,
       connectTimeoutMs: 30_000,
       defaultQueryTimeoutMs: 15_000,
       getMessage: async key => generation === this.generation ? store.getRawMessage(key)?.message ?? undefined : undefined,
