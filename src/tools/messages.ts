@@ -176,3 +176,4 @@ export function registerMessageTools(
 
   log.info('Message tools registered.');
 }
+

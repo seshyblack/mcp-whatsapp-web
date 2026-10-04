@@ -690,6 +690,19 @@ export class WhatsAppService implements WhatsAppBackend {
       .map(this.mapContactToSimpleContact);
   }
 
+  async getGroupMembers(groupId: string) {
+    await this.ensureReady();
+    const chat = await this.client.getChatById(groupId);
+    if (!chat.isGroup) throw new Error('A group JID is required.');
+    const participants = (chat as WAWebJS.GroupChat).participants;
+    const members = [];
+    for (const p of participants) {
+      const id = p.id._serialized;
+      members.push({ id, aliases: [id], identityResolved: /^\d+@c\.us$/.test(id), contact: await this.getContactById(id) });
+    }
+    return members;
+  }
+
   async listChats(limit = 20, includeLastMessage = true): Promise<SimpleChat[]> {
      await this.ensureReady();
      const chats = await this.client.getChats();
@@ -820,6 +833,7 @@ export class WhatsAppService implements WhatsAppBackend {
       isGroup: contact.isGroup,
       isWAContact: contact.isWAContact,
       isMyContact: contact.isMyContact,
+      savedStatus: typeof contact.isMyContact === 'boolean' ? (contact.isMyContact ? 'saved' : 'unsaved') : 'unknown',
       number: contact.number,
     };
   }

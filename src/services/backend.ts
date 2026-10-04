@@ -1,5 +1,7 @@
 /** Backend-neutral values exposed by the MCP tools. IDs are opaque to callers. */
 export interface SimpleContact {
+  /** Missing data must never be treated as proof that a person is unsaved. */
+  savedStatus?: 'saved' | 'unsaved' | 'unknown';
   id: string;
   name: string | null;
   pushname: string;
@@ -59,6 +61,7 @@ export interface BackendStatus {
 }
 
 export interface WhatsAppBackend {
+  getGroupMembers?(groupId: string): Promise<GroupMember[]>;
   readonly backend: 'webjs' | 'baileys';
   initialize(): Promise<void>;
   destroy(): Promise<void>;
@@ -82,4 +85,11 @@ export interface WhatsAppBackend {
   sendMediaFromBase64(to: string, data: string, mimeType: string, filename?: string, caption?: string): Promise<SentMessage>;
   sendVoiceNote(to: string, audioPath: string): Promise<SentMessage>;
   downloadMedia(messageId: string): Promise<MediaData | null>;
+}
+
+export interface GroupMember {
+  id: string;
+  aliases: string[];
+  identityResolved: boolean;
+  contact: SimpleContact | null;
 }

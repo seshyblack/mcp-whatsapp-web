@@ -505,6 +505,23 @@ export class BaileysService implements WhatsAppBackend {
       .filter(contact => contact.isUser && [contact.name, contact.pushname, contact.number, contact.id].some(value => value?.toLowerCase().includes(lower)));
   }
 
+  async getGroupMembers(groupId: string) {
+    await this.ensureReady();
+    if (!groupId.endsWith('@g.us')) throw new Error('A group JID is required.');
+    const metadata = await this.socket!.groupMetadata(groupId);
+    const store = this.requireStore();
+    return metadata.participants.map(participant => {
+      const p = participant as { id: string; phoneNumber?: string; lid?: string };
+      const pn = p.phoneNumber?.includes('@') ? p.phoneNumber : undefined;
+      const lid = p.lid ?? (p.id.endsWith('@lid') ? p.id : undefined);
+      if (lid && pn) store.setLidMapping(lid, pn);
+      const id = this.normalizeJid(pn ?? p.id);
+      const contact = store.getContact(id);
+      return { id, aliases: [p.id, ...(pn ? [pn] : []), ...(lid ? [lid] : [])],
+        identityResolved: id.endsWith('@s.whatsapp.net'), contact: contact ? this.mapContact(contact) : null };
+    });
+  }
+
   async getContactById(id: string): Promise<SimpleContact | null> {
     const store = await this.historyStore();
     const contact = store.getContact(this.normalizeJid(id));
@@ -667,6 +684,7 @@ export class BaileysService implements WhatsAppBackend {
       id, name: contact.name ?? contact.verifiedName ?? null, pushname: contact.notify ?? '',
       isMe: id === self, isUser: id.endsWith('@s.whatsapp.net') || id.endsWith('@lid'),
       isGroup: id.endsWith('@g.us'), isWAContact: true, isMyContact: !!contact.name,
+      savedStatus: contact.name ? 'saved' : 'unknown',
       number: id.endsWith('@s.whatsapp.net') ? id.split('@')[0]! : '',
     };
   }

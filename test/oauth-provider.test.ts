@@ -29,10 +29,14 @@ const pkcePair = () => {
 };
 
 /** Run provider.authorize and capture the redirect URL it issues. */
-async function authorize(client: OAuthClientInformationFull, codeChallenge: string, state?: string) {
+async function authorize(client: OAuthClientInformationFull, codeChallenge: string, state?: string, consent = true) {
   let redirectUrl = '';
   const res = { redirect: (_status: number, url: string) => { redirectUrl = url; } } as unknown as Response;
   await provider.authorize(client, { codeChallenge, redirectUri: REDIRECT_URI, state }, res);
+  if (whatsappAuthenticated && consent) {
+    const txn = new URL(redirectUrl, "http://x").searchParams.get("txn")!;
+    return provider.completeTransaction(txn, provider.getTransaction(txn)!.csrf);
+  }
   return redirectUrl;
 }
 
@@ -49,9 +53,13 @@ afterEach(() => {
 });
 
 describe('authorization', () => {
-  it('auto-approves with a code when WhatsApp is already linked', async () => {
+  it('requires explicit consent even when WhatsApp is already linked', async () => {
     const { challenge } = pkcePair();
-    const url = new URL(await authorize(makeClient(), challenge, 'my-state'));
+    const pending = await authorize(makeClient(), challenge, 'my-state', false);
+    expect(pending).toMatch(/^\/oauth\/link\?txn=/);
+    const txn = new URL(pending, 'http://x').searchParams.get('txn')!;
+    expect(() => provider.completeTransaction(txn, 'wrong')).toThrow();
+    const url = new URL(provider.completeTransaction(txn, provider.getTransaction(txn)!.csrf));
     expect(url.origin + url.pathname).toBe(REDIRECT_URI);
     expect(url.searchParams.get('state')).toBe('my-state');
     expect(url.searchParams.get('code')).toBeTruthy();
@@ -71,13 +79,14 @@ describe('authorization', () => {
     const { challenge } = pkcePair();
     const txn = new URL(await authorize(makeClient(), challenge), 'http://x').searchParams.get('txn')!;
 
-    expect(() => provider.completeTransaction(txn)).toThrow(/not authenticated/i);
+    const csrf = provider.getTransaction(txn)!.csrf;
+    expect(() => provider.completeTransaction(txn, csrf)).toThrow(/not authenticated/i);
 
     whatsappAuthenticated = true;
-    const redirect = new URL(provider.completeTransaction(txn));
+    const redirect = new URL(provider.completeTransaction(txn, csrf));
     expect(redirect.searchParams.get('code')).toBeTruthy();
     expect(provider.getTransaction(txn)).toBeUndefined(); // consumed
-    expect(() => provider.completeTransaction(txn)).toThrow(/unknown or expired/i);
+    expect(() => provider.completeTransaction(txn, csrf)).toThrow(/unknown or expired/i);
   });
 });
 
@@ -189,3 +198,4 @@ describe('store resilience', () => {
     await expect(fresh.verifyAccessToken(raw)).rejects.toThrow();
   });
 });
+
