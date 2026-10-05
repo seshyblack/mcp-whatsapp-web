@@ -709,10 +709,14 @@ export class BaileysService implements WhatsAppBackend {
     const fromMe = !!raw.key.fromMe;
     const self = this.socket?.user?.id ? this.normalizeJid(this.socket.user.id) : '';
     const messageKey = raw.key as WAMessageKey & { participantAlt?: string | null };
-    const senderParticipant = messageKey.participant ? this.normalizeJid(messageKey.participant) : undefined;
-    const senderAlt = messageKey.participantAlt ? this.normalizeJid(messageKey.participantAlt) : undefined;
+    const messageInfo = raw as WAMessage & { participant?: string | null; participantAlt?: string | null; pushName?: string | null };
+    const senderParticipantRaw = messageKey.participant || messageInfo.participant || undefined;
+    const senderAltRaw = messageKey.participantAlt || messageInfo.participantAlt || undefined;
+    const senderParticipant = senderParticipantRaw ? this.normalizeJid(senderParticipantRaw) : undefined;
+    const senderAlt = senderAltRaw ? this.normalizeJid(senderAltRaw) : undefined;
     const senderId = senderAlt || senderParticipant || chatId;
     const senderContact = !fromMe && chatId.endsWith('@g.us') ? this.requireStore().getContact(senderId) : undefined;
+    const senderName = senderContact?.name ?? senderContact?.notify ?? messageInfo.pushName ?? null;
     const media = content?.imageMessage ?? content?.videoMessage ?? content?.audioMessage ?? content?.documentMessage ?? content?.stickerMessage;
     const body = content?.conversation ?? content?.extendedTextMessage?.text
       ?? content?.imageMessage?.caption ?? content?.videoMessage?.caption ?? content?.documentMessage?.caption
@@ -727,7 +731,7 @@ export class BaileysService implements WhatsAppBackend {
         : type === 'audioMessage' && content?.audioMessage?.ptt ? 'ptt' : type?.replace(/Message$/, '') ?? 'unknown',
       ...(senderParticipant ? { senderParticipant } : {}),
       ...(senderAlt ? { senderAlt } : {}),
-      ...(senderContact ? { senderName: senderContact.name ?? senderContact.notify ?? null } : {}),
+      ...(senderName ? { senderName } : {}),
     };
   }
 }
