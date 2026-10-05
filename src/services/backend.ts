@@ -33,6 +33,10 @@ export interface SimpleMessage {
   hasMedia: boolean;
   mediaKey?: string;
   type: string;
+  /** For group messages, raw sender identities exposed by Baileys when available. */
+  senderParticipant?: string;
+  senderAlt?: string;
+  senderName?: string | null;
 }
 
 export interface SentMessage {
