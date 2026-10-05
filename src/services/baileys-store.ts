@@ -18,7 +18,7 @@ import {
 } from '@whiskeysockets/baileys';
 
 interface JsonRow { data: string }
-interface OwnerRow { pid: number; host: string; token: string }
+interface OwnerRow { pid: number; host: string; token: string; heartbeat_ms: number }
 interface MessageRow extends JsonRow {
   chat_id: string;
   message_id: string;
@@ -77,6 +77,9 @@ export class BaileysStore {
   readonly databasePath: string;
   private readonly db: Database.Database;
   private readonly ownerToken = randomUUID();
+  private ownerHeartbeat?: ReturnType<typeof setInterval>;
+  private static readonly OWNER_HEARTBEAT_MS = 10_000;
+  private static readonly OWNER_STALE_MS = 90_000;
   private closed = false;
   private authGeneration = 0;
   private auth?: StoredAuthState;
@@ -93,8 +96,13 @@ export class BaileysStore {
       this.db.pragma('secure_delete = ON');
       this.db.exec(`CREATE TABLE IF NOT EXISTS session_owner (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-        pid INTEGER NOT NULL, host TEXT NOT NULL, token TEXT NOT NULL
+        pid INTEGER NOT NULL, host TEXT NOT NULL, token TEXT NOT NULL,
+        heartbeat_ms INTEGER NOT NULL DEFAULT 0
       )`);
+      const ownerColumns = this.db.prepare('PRAGMA table_info(session_owner)').all() as Array<{ name: string }>;
+      if (!ownerColumns.some(column => column.name === 'heartbeat_ms')) {
+        this.db.exec('ALTER TABLE session_owner ADD COLUMN heartbeat_ms INTEGER NOT NULL DEFAULT 0');
+      }
       this.claimOwnership();
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS credentials (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), data TEXT NOT NULL);
@@ -111,6 +119,7 @@ export class BaileysStore {
         CREATE TABLE IF NOT EXISTS jid_aliases (alias TEXT PRIMARY KEY, canonical TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, data TEXT NOT NULL);
       `);
+      this.startOwnershipHeartbeat();
     } catch (error) {
       // A rejected contender must never release the real owner's lease.
       try { this.db.prepare('DELETE FROM session_owner WHERE token = ?').run(this.ownerToken); } catch { /* schema/open failure */ }
@@ -122,7 +131,8 @@ export class BaileysStore {
 
   private claimOwnership(): void {
     this.db.transaction(() => {
-      const owner = this.db.prepare('SELECT pid, host, token FROM session_owner WHERE singleton = 1').get() as OwnerRow | undefined;
+      const owner = this.db.prepare('SELECT pid, host, token, heartbeat_ms FROM session_owner WHERE singleton = 1').get() as OwnerRow | undefined;
+      const now = Date.now();
       if (owner) {
         let definitelyDead = false;
         if (owner.host === hostname() && Number.isSafeInteger(owner.pid) && owner.pid > 0) {
@@ -130,13 +140,29 @@ export class BaileysStore {
             definitelyDead = (error as NodeJS.ErrnoException).code === 'ESRCH';
           }
         }
-        if (!definitelyDead) {
+        const heartbeatStale = !Number.isFinite(owner.heartbeat_ms)
+          || owner.heartbeat_ms <= 0
+          || now - owner.heartbeat_ms > BaileysStore.OWNER_STALE_MS;
+        if (!definitelyDead && !heartbeatStale) {
           throw new Error(`Baileys session is already in use by process ${owner.pid} on ${owner.host}. Stop that server or select another BAILEYS_SESSION_DIR.`);
         }
       }
-      this.db.prepare('INSERT OR REPLACE INTO session_owner (singleton, pid, host, token) VALUES (1, ?, ?, ?)')
-        .run(process.pid, hostname(), this.ownerToken);
+      this.db.prepare('INSERT OR REPLACE INTO session_owner (singleton, pid, host, token, heartbeat_ms) VALUES (1, ?, ?, ?, ?)')
+        .run(process.pid, hostname(), this.ownerToken, now);
     }).immediate();
+  }
+
+  private startOwnershipHeartbeat(): void {
+    this.ownerHeartbeat = setInterval(() => {
+      if (this.closed) return;
+      try {
+        this.db.prepare('UPDATE session_owner SET heartbeat_ms = ? WHERE token = ?')
+          .run(Date.now(), this.ownerToken);
+      } catch {
+        // A later store operation will surface any real database failure.
+      }
+    }, BaileysStore.OWNER_HEARTBEAT_MS);
+    this.ownerHeartbeat.unref?.();
   }
 
   private assertOpen(): void {
@@ -486,6 +512,10 @@ export class BaileysStore {
 
   close(): void {
     if (this.closed) return;
+    if (this.ownerHeartbeat) {
+      clearInterval(this.ownerHeartbeat);
+      this.ownerHeartbeat = undefined;
+    }
     try {
       this.db.prepare('DELETE FROM session_owner WHERE token = ?').run(this.ownerToken);
     } finally {
