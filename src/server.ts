@@ -23,7 +23,6 @@ import { registerMessageTools } from './tools/messages.js';
 import { registerMediaTools } from './tools/media.js';
 import { registerAuthTools } from './tools/auth.js';
 import { CampaignStore } from './services/campaigns.js';
-import { readOnlyBackend } from './services/read-only-backend.js';
 import { registerCampaignTools } from './tools/campaigns.js';
 import { ownerGuard } from './auth/owner.js';
 import { campaignRouter } from './auth/campaign-page.js';
