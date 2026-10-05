@@ -111,21 +111,38 @@ export class WhatsAppMcpServer {
 
     log.info('Initializing WhatsApp client in the background...');
     void (async () => {
-      try {
-        // Clean up any orphaned browser processes before starting
-        await this.browserProcessManager?.cleanupOrphanedProcesses();
-        if (this.stopping) return;
+      const maxOwnershipRetries = 18;
+      for (let attempt = 0; attempt <= maxOwnershipRetries && !this.stopping; attempt++) {
+        try {
+          // Clean up any orphaned browser processes before starting
+          await this.browserProcessManager?.cleanupOrphanedProcesses();
+          if (this.stopping) return;
 
-        // Initialize the WhatsApp client
-        await this.whatsapp.initialize();
-        log.info('WhatsApp client initialized successfully.');
-      } catch (error) {
-        // initialize() already logged the full error; one line is enough here
-        log.error(
-          'Failed to initialize WhatsApp client. The MCP server stays up; ' +
-            'check_auth_status and get_qr_code can be used once the issue is resolved. ' +
-            (error instanceof Error ? error.message : String(error)),
-        );
+          // Initialize the WhatsApp client
+          await this.whatsapp.initialize();
+          log.info('WhatsApp client initialized successfully.');
+          return;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const ownershipConflict = /Baileys session is already in use/i.test(message);
+          if (ownershipConflict && attempt < maxOwnershipRetries && !this.stopping) {
+            const retryMs = 10_000;
+            log.warn(
+              `Baileys session is temporarily owned by another process; retrying in ${retryMs / 1000}s ` +
+                `(attempt ${attempt + 1}/${maxOwnershipRetries}).`,
+            );
+            await new Promise(resolve => setTimeout(resolve, retryMs));
+            continue;
+          }
+
+          // initialize() already logged the full error; one line is enough here
+          log.error(
+            'Failed to initialize WhatsApp client. The MCP server stays up; ' +
+              'check_auth_status and get_qr_code can be used once the issue is resolved. ' +
+              message,
+          );
+          return;
+        }
       }
     })();
   }
