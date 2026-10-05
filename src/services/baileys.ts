@@ -708,18 +708,26 @@ export class BaileysService implements WhatsAppBackend {
     const chatId = this.normalizeJid(raw.key.remoteJid!);
     const fromMe = !!raw.key.fromMe;
     const self = this.socket?.user?.id ? this.normalizeJid(this.socket.user.id) : '';
+    const messageKey = raw.key as WAMessageKey & { participantAlt?: string | null };
+    const senderParticipant = messageKey.participant ? this.normalizeJid(messageKey.participant) : undefined;
+    const senderAlt = messageKey.participantAlt ? this.normalizeJid(messageKey.participantAlt) : undefined;
+    const senderId = senderAlt || senderParticipant || chatId;
+    const senderContact = !fromMe && chatId.endsWith('@g.us') ? this.requireStore().getContact(senderId) : undefined;
     const media = content?.imageMessage ?? content?.videoMessage ?? content?.audioMessage ?? content?.documentMessage ?? content?.stickerMessage;
     const body = content?.conversation ?? content?.extendedTextMessage?.text
       ?? content?.imageMessage?.caption ?? content?.videoMessage?.caption ?? content?.documentMessage?.caption
       ?? content?.contactMessage?.displayName ?? content?.locationMessage?.name ?? '';
     return {
       id: encodeMessageId(raw.key), chatId, body,
-      from: fromMe ? self : this.normalizeJid(raw.key.participant || chatId),
+      from: fromMe ? self : senderId,
       to: fromMe || chatId.endsWith('@g.us') ? chatId : self,
       timestamp: timestamp(raw.messageTimestamp), fromMe, hasMedia: !!media,
       ...(media?.mediaKey ? { mediaKey: Buffer.from(media.mediaKey).toString('base64') } : {}),
       type: type === 'conversation' || type === 'extendedTextMessage' ? 'chat'
         : type === 'audioMessage' && content?.audioMessage?.ptt ? 'ptt' : type?.replace(/Message$/, '') ?? 'unknown',
+      ...(senderParticipant ? { senderParticipant } : {}),
+      ...(senderAlt ? { senderAlt } : {}),
+      ...(senderContact ? { senderName: senderContact.name ?? senderContact.notify ?? null } : {}),
     };
   }
 }
