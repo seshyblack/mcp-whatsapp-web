@@ -66,8 +66,8 @@ export class WhatsAppMcpServer {
     registerAuthTools(server, this.whatsapp);
     registerContactTools(server, this.whatsapp);
     registerChatTools(server, this.whatsapp);
-    registerMessageTools(server, readOnlyBackend(this.whatsapp));
-    registerMediaTools(server, readOnlyBackend(this.whatsapp));
+    registerMessageTools(server, this.whatsapp);
+    registerMediaTools(server, this.whatsapp);
     registerCampaignTools(server, this.whatsapp, this.campaigns, process.env.MCP_PUBLIC_URL);
 
     server.tool('ping', async () => ({
