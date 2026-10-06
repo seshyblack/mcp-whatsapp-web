@@ -134,7 +134,7 @@ export class CampaignStore {
   }
 }
 
-export async function selectCandidates(backend: WhatsAppBackend, store: CampaignStore, rules: Rules, count: number) {
+export async function selectCandidates(backend: WhatsAppBackend, _store: CampaignStore, rules: Rules, count: number) {
   if (!backend.getGroupMembers) throw new Error('Backend does not expose group participants.');
   if (!Number.isInteger(count) || count < 1 || count > 25) throw new Error('Choose 1–25 recipients.');
   const status = backend.getStatus();
