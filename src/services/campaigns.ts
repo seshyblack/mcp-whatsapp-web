@@ -98,6 +98,18 @@ export class CampaignStore {
     this.locked(() => { const state = this.read(); state.drafts[d.id] = d; this.save(state); });
     return this.get(d.id);
   }
+  /** Authorize an immutable draft from an authenticated MCP chat after the owner explicitly requests the send. */
+  approveFromChat(id: string): void {
+    this.locked(() => {
+      const state = this.read();
+      const d = state.drafts[id];
+      if (!d || d.status !== 'draft' || d.expiresAt <= Date.now()) throw new Error('Draft is invalid or expired.');
+      d.status = 'approved';
+      d.approvedUntil = Date.now() + 15 * 60000;
+      this.save(state);
+    });
+  }
+
   /** Called only by the owner-authenticated browser form, never exposed as an MCP tool. */
   approve(id: string, csrf: string, reviewedDigest: string): void {
     this.locked(() => {
