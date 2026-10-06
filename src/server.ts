@@ -22,6 +22,11 @@ import { registerChatTools } from './tools/chats.js';
 import { registerMessageTools } from './tools/messages.js';
 import { registerMediaTools } from './tools/media.js';
 import { registerAuthTools } from './tools/auth.js';
+import { CampaignStore } from './services/campaigns.js';
+import { readOnlyBackend } from './services/read-only-backend.js';
+import { registerCampaignTools } from './tools/campaigns.js';
+import { ownerGuard } from './auth/owner.js';
+import { campaignRouter } from './auth/campaign-page.js';
 
 const SERVER_INFO: Implementation = {
   name: 'mcp-whatsapp-web',
@@ -39,6 +44,7 @@ export class WhatsAppMcpServer {
   private httpServer: ReturnType<express.Express['listen']> | null = null;
   private stopping = false;
   private shutdownPromise?: Promise<void>;
+  private campaigns!: CampaignStore;
 
   constructor(whatsapp?: WhatsAppBackend) {
     if (whatsapp) this.whatsapp = whatsapp;
@@ -60,8 +66,9 @@ export class WhatsAppMcpServer {
     registerAuthTools(server, this.whatsapp);
     registerContactTools(server, this.whatsapp);
     registerChatTools(server, this.whatsapp);
-    registerMessageTools(server, this.whatsapp);
-    registerMediaTools(server, this.whatsapp);
+    registerMessageTools(server, readOnlyBackend(this.whatsapp));
+    registerMediaTools(server, readOnlyBackend(this.whatsapp));
+    registerCampaignTools(server, this.whatsapp, this.campaigns, process.env.MCP_PUBLIC_URL);
 
     server.tool('ping', async () => ({
       content: [{ type: 'text', text: 'pong' }],
@@ -78,6 +85,7 @@ export class WhatsAppMcpServer {
       return;
     }
     this.whatsapp = backend;
+    this.campaigns = new CampaignStore(path.resolve(process.env.CAMPAIGN_STORE_PATH || 'campaign-data/campaigns.json'));
     if (this.whatsapp.backend === 'webjs') {
       this.browserProcessManager = new BrowserProcessManager();
     }
@@ -160,12 +168,19 @@ export class WhatsAppMcpServer {
     // Bind to localhost only by default: the endpoint exposes a personal
     // WhatsApp session. Enable MCP_OAUTH=true to require OAuth bearer tokens.
     const host = process.env.MCP_HTTP_HOST || '127.0.0.1';
+    if (!['127.0.0.1', '::1', 'localhost'].includes(host)) throw new Error('Bind MCP to loopback and use an authenticated HTTPS tunnel.');
+    if (process.env.MCP_OAUTH !== 'true') throw new Error('HTTP transport requires MCP_OAUTH=true and owner authentication.');
+    const publicUrl = process.env.MCP_PUBLIC_URL;
+    if (publicUrl && (new URL(publicUrl).protocol !== 'https:' || process.env.MCP_OAUTH !== 'true')) throw new Error('Remote MCP requires HTTPS and OAuth.');
 
     // Optional OAuth layer: the server acts as its own authorization server,
     // and the "consent screen" is the WhatsApp QR / pairing-code page.
     const guards: RequestHandler[] = [];
     if (process.env.MCP_OAUTH === 'true') {
-      const issuerUrl = new URL(`http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`);
+      const issuerUrl = new URL(publicUrl || `http://${host === '::1' ? '[::1]' : host}:${port}`);
+      const owner = ownerGuard(process.env.MCP_OWNER_SECRET || '');
+      app.use(['/authorize', '/oauth/link', '/campaigns'], owner);
+      app.use('/campaigns', campaignRouter(this.campaigns, issuerUrl.origin));
       const mcpUrl = new URL('/mcp', issuerUrl);
       const provider = new WhatsAppOAuthProvider(
         this.whatsapp,
@@ -185,7 +200,7 @@ export class WhatsAppMcpServer {
           resourceName: 'WhatsApp MCP Server',
         }),
       );
-      app.use('/oauth/link', createLinkRouter(provider, this.whatsapp));
+      app.use('/oauth/link', createLinkRouter(provider, this.whatsapp, issuerUrl.origin));
       guards.push(
         requireBearerAuth({
           verifier: provider,

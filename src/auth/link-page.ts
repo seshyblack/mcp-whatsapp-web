@@ -16,6 +16,7 @@ const TXN_PATTERN = /^[A-Za-z0-9-]{16,64}$/;
 export function createLinkRouter(
   provider: WhatsAppOAuthProvider,
   whatsapp: WhatsAppBackend,
+  origin: string,
 ): Router {
   const router = Router();
 
@@ -39,14 +40,19 @@ export function createLinkRouter(
 
     const authenticated = whatsapp.isAuthenticated();
     const qrString = whatsapp.getLatestQrCode();
+    const pending = provider.getTransaction(txn)!;
     res.json({
       authenticated,
+      csrf: pending.csrf,
+      clientName: pending.client.client_name ?? pending.client.client_id,
+      redirectUri: pending.params.redirectUri,
       qrDataUrl: !authenticated && qrString ? await qrcode.toDataURL(qrString) : null,
       pairingCode: !authenticated ? whatsapp.getLatestPairingCode() : null,
     });
   });
 
   router.post('/pair', async (req: Request, res: Response) => {
+    if (req.headers.origin !== origin) { res.status(403).send('Invalid origin.'); return; }
     const txn = validTxn(req, res);
     if (!txn) return;
 
@@ -58,12 +64,13 @@ export function createLinkRouter(
     }
   });
 
-  router.get('/complete', (req: Request, res: Response) => {
+  router.post('/complete', (req: Request, res: Response) => {
+    if (req.headers.origin !== origin) { res.status(403).send('Invalid origin.'); return; }
     const txn = validTxn(req, res);
     if (!txn) return;
 
     try {
-      res.redirect(302, provider.completeTransaction(txn));
+      res.json({ redirectUrl: provider.completeTransaction(txn, String(req.body?.csrf ?? '')) });
     } catch (error) {
       log.warn('Failed to complete OAuth transaction:', error);
       res.status(409).send(error instanceof Error ? error.message : String(error));
@@ -135,8 +142,21 @@ const LINK_PAGE_HTML = `<!DOCTYPE html>
       if (!res.ok) { content.innerHTML = '<p class="error">This authorization request expired. Retry from your MCP client.</p>'; return; }
       const s = await res.json();
       if (s.authenticated) {
-        content.innerHTML = '<p class="ok">WhatsApp linked! Redirecting&hellip;</p>';
-        location.href = '/oauth/link/complete?txn=' + encodeURIComponent(txn);
+        content.replaceChildren();
+        const summary = document.createElement('p');
+        summary.textContent = 'Authorize ' + s.clientName + ' to access your WhatsApp MCP? Return address: ' + s.redirectUri;
+        const button = document.createElement('button');
+        button.textContent = 'Authorize this client';
+        button.onclick = async () => {
+          button.disabled = true;
+          const result = await fetch('/oauth/link/complete', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ txn, csrf: s.csrf }),
+          });
+          if (!result.ok) { summary.textContent = 'Authorization failed or expired. Restart from your MCP client.'; return; }
+          location.href = (await result.json()).redirectUrl;
+        };
+        content.append(summary, button);
         return;
       }
       if (s.pairingCode) {
@@ -169,3 +189,4 @@ const LINK_PAGE_HTML = `<!DOCTYPE html>
 </script>
 </body>
 </html>`;
+

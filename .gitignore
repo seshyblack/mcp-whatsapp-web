@@ -19,3 +19,12 @@ wheels/
 .oauth-store.json
 .mcpregistry_github_token
 .mcpregistry_registry_token
+
+# Private campaign drafts, recipient lists and send journals
+/campaign-data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sending.lock
+.env.*
+!.env.example

@@ -26,6 +26,7 @@ interface PendingTransaction {
   client: OAuthClientInformationFull;
   params: AuthorizationParams;
   createdAt: number;
+  csrf: string;
 }
 
 interface IssuedCode {
@@ -122,14 +123,8 @@ export class WhatsAppOAuthProvider implements OAuthServerProvider {
   ): Promise<void> {
     this.sweepExpired();
 
-    // WhatsApp session already linked: nothing for the user to do, approve directly.
-    if (this.whatsapp.isAuthenticated()) {
-      res.redirect(302, this.issueCodeRedirect(client, params));
-      return;
-    }
-
     const txn = randomUUID();
-    this.pendingTxns.set(txn, { client, params, createdAt: Date.now() });
+    this.pendingTxns.set(txn, { client, params, createdAt: Date.now(), csrf: randomBytes(32).toString('hex') });
     res.redirect(302, `/oauth/link?txn=${txn}`);
   }
 
@@ -144,11 +139,12 @@ export class WhatsAppOAuthProvider implements OAuthServerProvider {
    * state. Consumes the transaction and returns the redirect URL (carrying the
    * authorization code) to send the browser to.
    */
-  completeTransaction(txn: string): string {
+  completeTransaction(txn: string, csrf: string): string {
     const pending = this.getTransaction(txn);
     if (!pending) {
       throw new Error('Unknown or expired authorization transaction.');
     }
+    if (csrf !== pending.csrf) throw new Error('Explicit owner consent required.');
     if (!this.whatsapp.isAuthenticated()) {
       throw new Error('WhatsApp is not authenticated yet.');
     }
@@ -280,3 +276,4 @@ export class WhatsAppOAuthProvider implements OAuthServerProvider {
     }
   }
 }
+

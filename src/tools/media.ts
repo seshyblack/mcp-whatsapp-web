@@ -134,3 +134,4 @@ export function registerMediaTools(server: McpServer, whatsappService: WhatsAppB
     },
   );
 }
+
