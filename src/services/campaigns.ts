@@ -135,40 +135,65 @@ export class CampaignStore {
 }
 
 export async function selectCandidates(backend: WhatsAppBackend, store: CampaignStore, rules: Rules, count: number) {
-    if (!rules.excludeAnyPreviousOutbound && !rules.markers.some(s => s.trim())) throw new Error('Campaign markers are required when earlier outbound messages are allowed.');
   if (!backend.getGroupMembers) throw new Error('Backend does not expose group participants.');
   if (!Number.isInteger(count) || count < 1 || count > 25) throw new Error('Choose 1–25 recipients.');
   const status = backend.getStatus();
   if (!status.authenticated || status.history.state !== 'available') throw new Error('Wait for authentication and history synchronization.');
+
+  // Eligibility is intentionally limited to the owner's four requested rules:
+  // 1) verified member of sourceGroup, 2) resolved WhatsApp identity,
+  // 3) not already in the owner's contacts, 4) no meaningful prior 1:1 interaction
+  // in the synchronized history.
   const members = await backend.getGroupMembers(rules.sourceGroup);
-  const excluded = new Set<string>();
-  // Failure to fetch ANY excluded group aborts selection instead of weakening the filter.
-  for (const group of rules.excludeGroups) for (const m of await backend.getGroupMembers(group)) {
-    if (!m.identityResolved) throw new Error('An excluded group contains unresolved identities; cannot safely compare groups.');
-    for (const id of [m.id, ...m.aliases]) excluded.add(canonical(id));
-  }
   const candidates: Array<{ id: string; displayName: string; firstName: string; historyCoverage: string }> = [];
   const skipped: Array<{ id: string; reason: string }> = [];
   const seen = new Set<string>();
+
+  const isMeaningful = (msg: { type: string; body: string; hasMedia: boolean }) => {
+    const type = (msg.type || '').toLowerCase();
+    if (['unknown', 'protocol', 'placeholder', 'secretencrypted'].includes(type)) return false;
+    return Boolean((msg.body || '').trim() || msg.hasMedia || [
+      'chat', 'image', 'video', 'audio', 'ptt', 'document', 'sticker',
+      'reaction', 'call_log', 'template', 'interactive',
+    ].includes(type));
+  };
+
   for (const m of members) {
     const id = canonical(m.id);
     if (seen.has(id)) continue;
     seen.add(id);
+
     let reason = '';
-    const name = contactName(m.contact);
     if (!m.identityResolved) reason = 'unresolved_identity';
-    else if (m.contact?.isMe || !m.contact?.isUser) reason = 'not_another_user';
-    else if ([m.id, ...m.aliases].some(a => excluded.has(canonical(a)))) reason = 'excluded_group';
-    else if (m.contact.savedStatus !== 'unsaved') reason = m.contact.savedStatus === 'saved' ? 'saved_contact' : 'saved_status_unknown';
-    else if (!name) reason = 'display_name_unavailable';
-    else if (store.contacted(id, rules.excludeAnyPreviousOutbound ? undefined : rules.campaign)) reason = 'campaign_journal';
+    else if (!m.contact?.isUser || m.contact.isMe) reason = 'not_another_user';
+    else if (m.contact.isMyContact !== false) reason = 'already_in_contacts';
     else {
       const messages = await backend.getMessages(m.id, 1000);
-      if (messages.some(msg => msg.fromMe && (rules.excludeAnyPreviousOutbound || rules.markers.some(s => s.trim() && msg.body.toLocaleLowerCase().includes(s.toLocaleLowerCase()))))) reason = 'previous_outbound';
+      if (messages.some(isMeaningful)) reason = 'prior_direct_interaction';
     }
-    if (reason) skipped.push({ id: m.id, reason });
-    else candidates.push({ id: m.id, displayName: name!, firstName: name!.split(/\s+/)[0]!, historyCoverage: 'Only synchronized history was searched; no match does not prove never contacted.' });
+
+    if (reason) {
+      skipped.push({ id: m.id, reason });
+    } else {
+      const displayName = contactName(m.contact) || (m.contact?.number ? `+${m.contact.number}` : id.split('@')[0]!);
+      const firstName = contactName(m.contact)?.split(/\s+/)[0] || '';
+      candidates.push({
+        id: m.id,
+        displayName,
+        firstName,
+        historyCoverage: 'Only synchronized history was searched; no meaningful prior 1:1 interaction was found.',
+      });
+    }
+
     if (candidates.length >= count || seen.size >= 300) break;
   }
-  return { candidates, skipped, scanned: seen.size, requested: count, completeArchive: false, note: 'Unknown saved status and unresolved names/identities are excluded. Review historical coverage before approving.' };
+
+  return {
+    candidates,
+    skipped,
+    scanned: seen.size,
+    requested: count,
+    completeArchive: false,
+    note: 'Eligibility uses only source-group membership, resolved identity, isMyContact=false, and no meaningful prior 1:1 interaction in synchronized history.',
+  };
 }
