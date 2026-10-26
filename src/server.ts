@@ -24,6 +24,7 @@ import { registerMediaTools } from './tools/media.js';
 import { registerAuthTools } from './tools/auth.js';
 import { CampaignStore } from './services/campaigns.js';
 import { registerCampaignTools } from './tools/campaigns.js';
+import { registerCatalogTools } from './tools/catalog.js';
 import { ownerGuard } from './auth/owner.js';
 import { campaignRouter } from './auth/campaign-page.js';
 
@@ -68,6 +69,7 @@ export class WhatsAppMcpServer {
     registerMessageTools(server, this.whatsapp);
     registerMediaTools(server, this.whatsapp);
     registerCampaignTools(server, this.whatsapp, this.campaigns, process.env.MCP_PUBLIC_URL);
+    registerCatalogTools(server);
 
     server.tool('ping', async () => ({
       content: [{ type: 'text', text: 'pong' }],
