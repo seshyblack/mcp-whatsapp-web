@@ -153,6 +153,8 @@ export class WhatsAppCatalog {
     });
     const form = new URLSearchParams();
     form.set('item_type', 'PRODUCT_ITEM');
+    // The Batch API defaults to upsert; never overwrite/create the opposite action silently.
+    form.set('allow_upsert', 'false');
     form.set('requests', JSON.stringify(requests));
     const response = await this.request('/' + this.catalogId + '/items_batch', {
       method: 'POST',
