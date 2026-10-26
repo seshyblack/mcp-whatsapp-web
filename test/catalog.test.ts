@@ -48,7 +48,7 @@ describe('WhatsApp-connected catalog safety', () => {
       expect(form.get('allow_upsert')).toBe('false');
       const requests = JSON.parse(form.get('requests') || '[]');
       expect(requests).toMatchObject([{ method: 'CREATE', data: {
-        id: product.retailer_id, title: product.name, price: '129.00 MYR',
+        id: product.retailer_id, title: product.name, price: '129.00 MYR', visibility: 'published',
       } }]);
       expect(req?.headers).toMatchObject({ Authorization: 'Bearer private-test-token' });
       return ok({ handles: ['batch-123'], validation_status: [] });
@@ -57,6 +57,25 @@ describe('WhatsApp-connected catalog safety', () => {
     const result = await api.submit('CREATE', [product]);
     expect(result).toMatchObject({ submitted: true, visibleOnWhatsApp: false, handles: ['batch-123'] });
     expect(send).toHaveBeenCalledTimes(2);
+  });
+
+
+  it('publishes new items by default but does not unhide existing items on UPDATE', async () => {
+    const batches: Array<{ action: string; visibility?: string }> = [];
+    const send = vi.fn(async (url: string, req?: RequestInit) => {
+      if (url.endsWith('/product_catalogs')) return ok({ data: [{ id: env.WHATSAPP_CATALOG_ID }] });
+      const form = new URLSearchParams(String(req?.body));
+      const requests = JSON.parse(form.get('requests') || '[]');
+      batches.push({ action: requests[0].method, visibility: requests[0].data.visibility });
+      return ok({ handles: ['batch-test'] });
+    });
+    const api = new WhatsAppCatalog(env, send as unknown as typeof fetch);
+    await api.submit('CREATE', [product]);
+    await api.submit('UPDATE', [{ retailer_id: product.retailer_id, description: 'Updated details' }]);
+    expect(batches).toEqual([
+      { action: 'CREATE', visibility: 'published' },
+      { action: 'UPDATE', visibility: undefined },
+    ]);
   });
 
   it('rejects incomplete new products before calling batch endpoint', async () => {
