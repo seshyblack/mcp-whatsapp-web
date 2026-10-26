@@ -138,6 +138,9 @@ export class WhatsAppCatalog {
         }
       }
       const data: Record<string, string> = { id: item.retailer_id };
+      // New catalogue items must be submitted as Published, never Hidden by default.
+      // Do not silently re-publish a deliberately hidden item during UPDATE.
+      if (action === 'CREATE') data.visibility = 'published';
       if (item.name !== undefined) data.title = item.name;
       if (item.description !== undefined) data.description = item.description;
       if (item.image_url !== undefined) data.image_link = item.image_url;

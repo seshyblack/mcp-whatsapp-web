@@ -16,6 +16,8 @@ Set these as secret variables on the existing deployment. Never provide the toke
 1. Run `whatsapp_catalog_status` to verify the target catalogue is **linked=true** to the intended WABA.
 2. Run `whatsapp_catalog_list_products` and compare existing retailer IDs to the proposed additions. Check images, URLs, prices, currency, product names and descriptions with the owner before modifying anything.
 3. Run `whatsapp_catalog_upload_products` with `action=CREATE` or `UPDATE`, 1–25 explicitly approved products at a time. Create requires complete product fields.
+   - Every CREATE now submits `visibility=published` automatically. UPDATE preserves the current visibility; it never silently unhides an intentionally hidden product.
+   - Published in Meta is **not the same** as WhatsApp Business **SHOW**. The WhatsApp app may still require manual SHOW after approval. Verify separately before claiming customer visibility.
 4. Poll `whatsapp_catalog_batch_status` for the returned batch handle(s); check per-item errors and review/visibility in the WhatsApp Business account itself. Accepted API requests are **not** proof that products are visible in WhatsApp.
 
 Do not change the WABA association or replace its connected catalogue automatically, because that may displace an existing app-based catalogue. The tools fail closed if access credentials or link verification are missing. Existing messaging tools are unchanged.
