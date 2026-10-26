@@ -1,0 +1,28 @@
+name: WhatsApp catalogue validation
+
+on:
+  push:
+    branches:
+      - shyann/whatsapp-catalog-tools
+  pull_request:
+    branches:
+      - shyann/render-deploy
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --include=optional
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: 'true'
+      - name: TypeScript compilation
+        run: npm run build
+      - name: Unit tests
+        run: npm test
