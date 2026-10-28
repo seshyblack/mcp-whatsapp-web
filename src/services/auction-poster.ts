@@ -66,7 +66,7 @@ function card(lot: AuctionDigestLot, index: number, photo: string | null): strin
   return '<rect x="' + x + '" y="' + y + '" width="472" height="282" rx="2" fill="#fffcf8" stroke="' + line + '"/>' +
     cover +
     '<text x="' + textX + '" y="' + (y + 35) + '" fill="' + accent + '" font-size="13" letter-spacing="1.3" font-family="Arial,sans-serif">LOT ' +
-      escapeXml(lot.productId.slice(-6)) + '</text>' + title +
+      'CALMISTRY AUCTION' + '</text>' + title +
     '<text x="' + textX + '" y="' + (y + 167) + '" fill="' + muted + '" font-size="14" font-family="Arial,sans-serif">OPENING BID</text>' +
     '<text x="' + textX + '" y="' + (y + 193) + '" fill="' + ink + '" font-size="24" font-family="Arial,sans-serif">' +
       escapeXml(formatMYR(lot.openingCents)) + '</text>' +
