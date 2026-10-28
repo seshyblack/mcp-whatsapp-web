@@ -25,6 +25,8 @@ import { registerAuthTools } from './tools/auth.js';
 import { CampaignStore } from './services/campaigns.js';
 import { registerCampaignTools } from './tools/campaigns.js';
 import { registerCatalogTools } from './tools/catalog.js';
+import { registerAuctionTools } from './tools/auction.js';
+import { AuctionCoordinator } from './services/auction-coordinator.js';
 import { ownerGuard } from './auth/owner.js';
 import { campaignRouter } from './auth/campaign-page.js';
 
@@ -45,6 +47,7 @@ export class WhatsAppMcpServer {
   private stopping = false;
   private shutdownPromise?: Promise<void>;
   private campaigns!: CampaignStore;
+  private auction?: AuctionCoordinator;
 
   constructor(whatsapp?: WhatsAppBackend) {
     if (whatsapp) this.whatsapp = whatsapp;
@@ -70,6 +73,7 @@ export class WhatsAppMcpServer {
     registerMediaTools(server, this.whatsapp);
     registerCampaignTools(server, this.whatsapp, this.campaigns, process.env.MCP_PUBLIC_URL);
     registerCatalogTools(server);
+    if (this.auction) registerAuctionTools(server, this.auction);
 
     server.tool('ping', async () => ({
       content: [{ type: 'text', text: 'pong' }],
@@ -87,6 +91,11 @@ export class WhatsAppMcpServer {
     }
     this.whatsapp = backend;
     this.campaigns = new CampaignStore(path.resolve(process.env.CAMPAIGN_STORE_PATH || 'campaign-data/campaigns.json'));
+    // Explicit opt-in only. A persistent ledger may be enabled without any automated replies or public Channel posts.
+    if (process.env.AUCTION_DB_PATH) {
+      this.auction = new AuctionCoordinator(this.whatsapp);
+      this.auction.start();
+    }
     if (this.whatsapp.backend === 'webjs') {
       this.browserProcessManager = new BrowserProcessManager();
     }
@@ -324,6 +333,8 @@ export class WhatsAppMcpServer {
     log.info('Shutting down WhatsApp MCP Server...');
     try {
       // Close the active driver and flush its persistent session state.
+      this.auction?.stop();
+      this.auction = undefined;
       await this.whatsapp?.destroy();
     } finally {
       await this.closeTransports();
