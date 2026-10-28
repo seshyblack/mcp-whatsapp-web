@@ -192,7 +192,8 @@ export class AuctionBook {
       if (amount == null) return productId ? { status: 'selected', productId } : { status: 'ignored' };
       if (this.db.prepare('SELECT 1 FROM bids WHERE chat_id=? AND stanza_id=?').get(message.chatId, message.stanzaId)) return { status: 'duplicate' };
       const lotId = this.resolveLot(message);
-      if (!lotId) return { status: 'needs_item', reply: 'Please share the catalogue item with your bid so I can identify the correct piece.' };
+      // Do not mistake a price discussion in an unrelated Calmistry chat for an auction bid.
+      if (!lotId) return { status: 'ignored' };
       if (!this.db.prepare('SELECT 1 FROM agreements WHERE chat_id=?').get(message.chatId)) {
         // This requires owner-configured terms; otherwise no customer-facing automated reply is safe.
         if (!this.termsUrl) return { status: 'terms_pending', productId: lotId };
