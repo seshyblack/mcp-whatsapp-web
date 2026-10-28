@@ -46,6 +46,19 @@ export interface PrivateAuctionNotice {
   createdAt: number;
 }
 
+/** MYT (UTC+8) review boundaries align with UTC 00/10/30 minute marks. */
+export function reviewIntervalMs(remainingMs: number): number {
+  return remainingMs <= 60 * 60_000 ? 10 * 60_000 : 30 * 60_000;
+}
+
+export function latestReviewSlot(now: number, closeAt: number): number | null {
+  if (now >= closeAt || now < 0) return null;
+  const interval = reviewIntervalMs(closeAt - now);
+  const slot = Math.floor(now / interval) * interval;
+  // Only process a current boundary, never retrospectively flood after an outage/restart.
+  return now - slot <= 90_000 ? slot : null;
+}
+
 export function formatMYR(cents: number): string {
   return 'RM ' + (cents / 100).toLocaleString('en-MY', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 }
@@ -83,6 +96,9 @@ export class AuctionBook {
       'CREATE TABLE IF NOT EXISTS private_notices (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT NOT NULL, product_id TEXT, kind TEXT NOT NULL, event_key TEXT NOT NULL, text TEXT NOT NULL, status TEXT NOT NULL DEFAULT \'queued\', created_at INTEGER NOT NULL, attempted_at INTEGER, receipt TEXT, UNIQUE(chat_id, kind, event_key))',
       'CREATE INDEX IF NOT EXISTS private_notices_pending_idx ON private_notices(status,created_at)',
       'CREATE TABLE IF NOT EXISTS auction_optouts (chat_id TEXT PRIMARY KEY, opted_out_at INTEGER NOT NULL)',
+      // One review per item and slot; a bidder is notified only when their position changes.
+      'CREATE TABLE IF NOT EXISTS auction_position_reviews (product_id TEXT PRIMARY KEY, last_slot INTEGER NOT NULL)',
+      'CREATE TABLE IF NOT EXISTS auction_bidder_positions (product_id TEXT NOT NULL, chat_id TEXT NOT NULL, last_position TEXT NOT NULL, last_slot INTEGER NOT NULL, PRIMARY KEY(product_id,chat_id))',
     ].join(';') + ';');
   }
 
@@ -135,9 +151,8 @@ export class AuctionBook {
       .get(productId) as { openingCents: number; closeAt: number } | undefined;
     if (!lot) return { status: 'needs_item' };
     if (message.receivedAt >= lot.closeAt) return { status: 'closed', productId, reply: 'Bidding for this lot has closed.' };
-    const previous = this.db.prepare("SELECT chat_id AS chatId, amount_cents AS amountCents FROM bids WHERE product_id=? AND status='confirmed' ORDER BY amount_cents DESC, seen_at ASC LIMIT 1")
-      .get(productId) as { chatId: string; amountCents: number } | undefined;
-    const highest = previous?.amountCents ?? null;
+    const highest = (this.db.prepare("SELECT MAX(amount_cents) AS amount FROM bids WHERE product_id=? AND status='confirmed'")
+      .get(productId) as { amount: number | null }).amount;
     const min = Math.max(lot.openingCents, (highest ?? 0) + 1);
     if (amount < min) {
       return { status: 'too_low', productId, reply: 'Thank you. The minimum eligible bid is ' + formatMYR(min) + '.' };
@@ -147,20 +162,8 @@ export class AuctionBook {
       this.db.prepare("INSERT INTO bids (chat_id,stanza_id,product_id,amount_cents,seen_at,status) VALUES (?,?,?,?,?,'confirmed')")
         .run(message.chatId, message.stanzaId, productId, amount, message.receivedAt);
     }
-    const lotName = (this.db.prepare('SELECT name FROM lots WHERE product_id=?').get(productId) as { name: string }).name;
-    this.enqueueNotice(message.chatId, productId, 'leading', message.stanzaId,
-      'Thank you — your bid of ' + formatMYR(amount) + ' for ' + lotName + ' is confirmed. You are currently leading.',
-      message.receivedAt);
-    // Only the previously leading bidder is privately notified. No public board, names or reserve values.
-    if (previous && previous.chatId !== message.chatId) {
-      this.enqueueNotice(previous.chatId, productId, 'outbid', message.stanzaId,
-        lotName + ' has moved beyond your bid. You are welcome to place a revised bid before closing.',
-        message.receivedAt);
-    }
-    // Per-lot rolling anti-sniping: a bid in the final three minutes extends this lot by three minutes.
-    if (message.receivedAt >= lot.closeAt - 180_000) {
-      this.db.prepare('UPDATE lots SET close_at=? WHERE product_id=?').run(message.receivedAt + 180_000, productId);
-    }
+    // Bids are final when confirmed, but position changes are announced only at scheduled reviews.
+    // No last-minute automatic extension: the posted close time remains fixed.
     return { status: 'confirmed', productId, amountCents: amount, reply: 'Thank you. Your bid of ' + formatMYR(amount) + ' has been recorded.' };
   }
 
@@ -244,6 +247,57 @@ export class AuctionBook {
     return this.digest().find(lot => lot.productId === productId);
   }
 
+  /**
+   * Evaluate the actual leader at :00/:30, then :00/:10/.../:50 in the final hour.
+   * Every accepted bidder receives a private card only when their position differs
+   * from their last review. It is not live bidding; a single instant can contain
+   * 50 or more bids without producing 50 rounds of position chatter.
+   */
+  reviewBidPositions(now = Date.now()): { reviewedLots: number; queued: number; intervals: number[] } {
+    return this.db.transaction(() => {
+      const lots = this.db.prepare('SELECT product_id AS productId,name,close_at AS closeAt FROM lots WHERE close_at>?')
+        .all(now) as Array<{ productId: string; name: string; closeAt: number }>;
+      let reviewedLots = 0;
+      let queued = 0;
+      const intervals: number[] = [];
+      for (const lot of lots) {
+        const slot = latestReviewSlot(now, lot.closeAt);
+        if (slot === null) continue;
+        const last = this.db.prepare('SELECT last_slot AS lastSlot FROM auction_position_reviews WHERE product_id=?')
+          .get(lot.productId) as { lastSlot: number } | undefined;
+        if (last && last.lastSlot >= slot) continue;
+        const leader = this.db.prepare(`SELECT chat_id AS chatId FROM bids
+          WHERE product_id=? AND status='confirmed' ORDER BY amount_cents DESC,seen_at ASC LIMIT 1`)
+          .get(lot.productId) as { chatId: string } | undefined;
+        const participants = this.db.prepare(`SELECT DISTINCT b.chat_id AS chatId FROM bids b
+          JOIN agreements a ON a.chat_id=b.chat_id WHERE b.product_id=? AND b.status='confirmed'`)
+          .all(lot.productId) as Array<{ chatId: string }>;
+        for (const bidder of participants) {
+          if (this.optedOut(bidder.chatId)) continue;
+          const position: 'leading' | 'outbid' = leader?.chatId === bidder.chatId ? 'leading' : 'outbid';
+          const lastPosition = this.db.prepare('SELECT last_position AS position FROM auction_bidder_positions WHERE product_id=? AND chat_id=?')
+            .get(lot.productId, bidder.chatId) as { position: string } | undefined;
+          if (lastPosition?.position !== position) {
+            const text = position === 'leading'
+              ? 'You are currently leading on ' + lot.name + '. Thank you for your confirmed bid.'
+              : lot.name + ' has moved beyond your bid. You are welcome to place a revised bid before closing.';
+            const eventKey = lot.productId + ':' + slot;
+            this.enqueueNotice(bidder.chatId, lot.productId, position, eventKey, text, now);
+            queued++;
+          }
+          this.db.prepare(`INSERT INTO auction_bidder_positions(product_id,chat_id,last_position,last_slot) VALUES (?,?,?,?)
+            ON CONFLICT(product_id,chat_id) DO UPDATE SET last_position=excluded.last_position,last_slot=excluded.last_slot`)
+            .run(lot.productId, bidder.chatId, position, slot);
+        }
+        this.db.prepare(`INSERT INTO auction_position_reviews(product_id,last_slot) VALUES (?,?)
+          ON CONFLICT(product_id) DO UPDATE SET last_slot=excluded.last_slot`).run(lot.productId, slot);
+        reviewedLots++;
+        intervals.push(reviewIntervalMs(lot.closeAt - now) / 60_000);
+      }
+      return { reviewedLots, queued, intervals };
+    })();
+  }
+
   /** Read-only list for operator review; no sends occur. */
   listNotices(limit = 30): PrivateAuctionNotice[] {
     return this.db.prepare(`SELECT id,chat_id AS chatId,product_id AS productId,kind,event_key AS eventKey,text,status,created_at AS createdAt
@@ -255,21 +309,29 @@ export class AuctionBook {
     return this.db.transaction(() => {
       for (let iteration = 0; iteration < 100; iteration++) {
         const row = this.db.prepare(`SELECT id,chat_id AS chatId,product_id AS productId,kind,event_key AS eventKey,text,status,created_at AS createdAt
-          FROM private_notices WHERE status='queued' ORDER BY id ASC LIMIT 1`).get() as PrivateAuctionNotice | undefined;
+          FROM private_notices WHERE status='queued'
+          ORDER BY CASE WHEN kind='information' THEN 0 ELSE 1 END, id ASC LIMIT 1`).get() as PrivateAuctionNotice | undefined;
         if (!row) return null;
         const lot = row.productId ? this.db.prepare('SELECT close_at AS closeAt FROM lots WHERE product_id=?')
           .get(row.productId) as { closeAt: number } | undefined : undefined;
         const expired = row.kind !== 'information' && !!lot && now >= lot.closeAt;
         const blocked = this.optedOut(row.chatId);
         const olderThanDay = now - row.createdAt > 24 * 60 * 60_000;
-        const staleLead = row.kind === 'leading' && !!row.productId && (() => {
-          const first = this.db.prepare("SELECT chat_id AS chatId FROM bids WHERE product_id=? AND status='confirmed' ORDER BY amount_cents DESC, seen_at ASC LIMIT 1")
-            .get(row.productId) as { chatId: string } | undefined;
-          return first?.chatId !== row.chatId;
-        })();
-        if (expired || olderThanDay || staleLead || blocked) {
+        const currentLeader = (row.kind === 'leading' || row.kind === 'outbid') && !!row.productId
+          ? this.db.prepare("SELECT chat_id AS chatId FROM bids WHERE product_id=? AND status='confirmed' ORDER BY amount_cents DESC, seen_at ASC LIMIT 1")
+              .get(row.productId) as { chatId: string } | undefined
+          : undefined;
+        const stalePosition = !!currentLeader && (
+          (row.kind === 'leading' && currentLeader.chatId !== row.chatId) ||
+          (row.kind === 'outbid' && currentLeader.chatId === row.chatId)
+        );
+        const superseded = ['leading', 'outbid'].includes(row.kind) && !!row.productId &&
+          !!this.db.prepare(`SELECT 1 FROM private_notices WHERE chat_id=? AND product_id=? AND id>?
+            AND kind IN ('leading','outbid') AND status IN ('queued','sending','sent') LIMIT 1`)
+            .get(row.chatId, row.productId, row.id);
+        if (expired || olderThanDay || stalePosition || blocked || superseded) {
           this.db.prepare("UPDATE private_notices SET status='skipped',receipt=? WHERE id=?")
-            .run(blocked ? 'Opted out' : expired ? 'Lot closed' : staleLead ? 'Bid no longer leading' : 'Expired in queue', row.id);
+            .run(blocked ? 'Opted out' : expired ? 'Lot closed' : stalePosition ? 'Position superseded' : superseded ? 'Later position review exists' : 'Expired in queue', row.id);
           continue;
         }
         this.db.prepare("UPDATE private_notices SET status='sending',attempted_at=? WHERE id=? AND status='queued'").run(now, row.id);
