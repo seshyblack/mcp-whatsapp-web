@@ -82,6 +82,7 @@ export class AuctionBook {
       // All private sends are durable and idempotent. Ambiguous failures are never retried automatically.
       'CREATE TABLE IF NOT EXISTS private_notices (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT NOT NULL, product_id TEXT, kind TEXT NOT NULL, event_key TEXT NOT NULL, text TEXT NOT NULL, status TEXT NOT NULL DEFAULT \'queued\', created_at INTEGER NOT NULL, attempted_at INTEGER, receipt TEXT, UNIQUE(chat_id, kind, event_key))',
       'CREATE INDEX IF NOT EXISTS private_notices_pending_idx ON private_notices(status,created_at)',
+      'CREATE TABLE IF NOT EXISTS auction_optouts (chat_id TEXT PRIMARY KEY, opted_out_at INTEGER NOT NULL)',
     ].join(';') + ';');
   }
 
@@ -166,6 +167,17 @@ export class AuctionBook {
   /** Must be called only for live, incoming private-chat messages (not history or ordinary outbound texts). */
   handle(message: AuctionMessage): AuctionResponse {
     if (message.fromMe || !/^\d+@(s\.whatsapp\.net|lid)$/.test(message.chatId)) return { status: 'ignored' };
+    if (/^(STOP|UNSUBSCRIBE|STOP AUCTION|STOP AUCTION UPDATES)[.!\s]*$/i.test(message.body.trim())) {
+      this.db.transaction(() => {
+        this.db.prepare('INSERT OR REPLACE INTO auction_optouts(chat_id,opted_out_at) VALUES(?,?)')
+          .run(message.chatId, message.receivedAt);
+        this.db.prepare("UPDATE private_notices SET status='skipped',receipt='Opted out' WHERE chat_id=? AND status='queued'")
+          .run(message.chatId);
+      })();
+      return { status: 'ignored' };
+    }
+    // Rejoining requires a deliberate request; ordinary price messages never re-enable notifications.
+    if (this.optedOut(message.chatId)) return { status: 'ignored' };
     return this.db.transaction((): AuctionResponse => {
       const productId = message.productId ?? productIdFromText(message.body);
       if (productId && this.db.prepare('SELECT 1 FROM lots WHERE product_id=?').get(productId)) {
@@ -206,7 +218,12 @@ export class AuctionBook {
     })();
   }
 
+  private optedOut(chatId: string): boolean {
+    return !!this.db.prepare('SELECT 1 FROM auction_optouts WHERE chat_id=?').get(chatId);
+  }
+
   private enqueueNotice(chatId: string, productId: string | null, kind: PrivateNoticeKind, eventKey: string, text: string, now: number): void {
+    if (this.optedOut(chatId)) return;
     this.db.prepare("INSERT OR IGNORE INTO private_notices(chat_id,product_id,kind,event_key,text,status,created_at) VALUES (?,?,?,?,?,'queued',?)")
       .run(chatId, productId, kind, eventKey, text, now);
   }
@@ -243,15 +260,16 @@ export class AuctionBook {
         const lot = row.productId ? this.db.prepare('SELECT close_at AS closeAt FROM lots WHERE product_id=?')
           .get(row.productId) as { closeAt: number } | undefined : undefined;
         const expired = row.kind !== 'information' && !!lot && now >= lot.closeAt;
+        const blocked = this.optedOut(row.chatId);
         const olderThanDay = now - row.createdAt > 24 * 60 * 60_000;
         const staleLead = row.kind === 'leading' && !!row.productId && (() => {
           const first = this.db.prepare("SELECT chat_id AS chatId FROM bids WHERE product_id=? AND status='confirmed' ORDER BY amount_cents DESC, seen_at ASC LIMIT 1")
             .get(row.productId) as { chatId: string } | undefined;
           return first?.chatId !== row.chatId;
         })();
-        if (expired || olderThanDay || staleLead) {
+        if (expired || olderThanDay || staleLead || blocked) {
           this.db.prepare("UPDATE private_notices SET status='skipped',receipt=? WHERE id=?")
-            .run(expired ? 'Lot closed' : staleLead ? 'Bid no longer leading' : 'Expired in queue', row.id);
+            .run(blocked ? 'Opted out' : expired ? 'Lot closed' : staleLead ? 'Bid no longer leading' : 'Expired in queue', row.id);
           continue;
         }
         this.db.prepare("UPDATE private_notices SET status='sending',attempted_at=? WHERE id=? AND status='queued'").run(now, row.id);
@@ -285,6 +303,7 @@ export class AuctionBook {
           JOIN agreements a ON a.chat_id=b.chat_id
           WHERE b.product_id=? AND b.status='confirmed'`).all(lot.productId) as { chatId: string }[];
         for (const person of recipients) {
+          if (this.optedOut(person.chatId)) continue;
           const eventKey = lot.productId + ':' + kind + ':' + lot.closeAt;
           const before = this.db.prepare('SELECT 1 FROM private_notices WHERE chat_id=? AND kind=? AND event_key=?')
             .get(person.chatId, kind, eventKey);
@@ -317,6 +336,7 @@ export class AuctionBook {
     let count = 0;
     this.db.transaction(() => {
       for (const person of bidders) {
+        if (this.optedOut(person.chatId)) continue;
         const eventKey = productId + ':' + day + ':' + kind;
         const old = this.db.prepare('SELECT 1 FROM private_notices WHERE chat_id=? AND kind=? AND event_key=?')
           .get(person.chatId, 'activity', eventKey);

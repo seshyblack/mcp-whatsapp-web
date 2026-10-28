@@ -90,6 +90,21 @@ describe('private bidder notification ledger', () => {
     book.close();
   });
 
+  it('honours STOP by cancelling queued updates and excluding the bidder from later multi-recipient reminders', () => {
+    const book = fixture();
+    acceptedBid(book, a, 'a', 150);
+    acceptedBid(book, b, 'b', 200);
+    const before = book.listNotices().filter(n => n.chatId === a && n.status === 'queued');
+    expect(before.length).toBeGreaterThan(0);
+    expect(book.handle(message(a, 'stop', 'STOP')).status).toBe('ignored');
+    expect(book.listNotices().filter(n => n.chatId === a && n.status === 'queued')).toHaveLength(0);
+    expect(book.queuePrivateMomentum(productId, 'competitive', t + 3000)).toBe(1);
+    const activity = book.listNotices().filter(n => n.kind === 'activity');
+    expect(activity.map(n => n.chatId)).toEqual([b]);
+    expect(book.handle(message(a, 'after-stop', 'My bid is RM 250')).status).toBe('ignored');
+    book.close();
+  });
+
   it('never treats an unrelated WhatsApp price conversation as an auction bid', () => {
     const book = fixture();
     const result = book.handle(message(a, 'ordinary-chat', 'It is RM 450. Is that alright?'));
