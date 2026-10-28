@@ -1,0 +1,27 @@
+name: Temporary auction dependency lockfile update
+on:
+  push:
+    branches:
+      - shyann/auction-bid-digest-20261028
+permissions:
+  contents: write
+jobs:
+  update-lock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Regenerate lockfile only
+        run: npm install --package-lock-only --ignore-scripts
+      - name: Commit lockfile if changed
+        run: |
+          if ! git diff --quiet -- package-lock.json; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add package-lock.json
+            git commit -m "Lock Sharp dependency for auction poster"
+            git push origin HEAD:shyann/auction-bid-digest-20261028
+          fi
