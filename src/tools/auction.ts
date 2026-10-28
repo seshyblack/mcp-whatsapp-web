@@ -60,6 +60,50 @@ export function registerAuctionTools(server: McpServer, auction: AuctionCoordina
     }
   });
 
+  server.registerTool('auction_preview_private_bid_card', {
+    description: 'Render a single-product Calmistry private auction graphic without sending. For preview and owner approval.',
+    inputSchema: {
+      product_id: z.string().regex(/^\d{5,30}$/),
+      kind: z.enum(['leading', 'outbid', 'activity', 'reminder_1h']),
+    },
+    annotations: read,
+  }, async ({ product_id, kind }): Promise<CallToolResult> => {
+    try {
+      const jpg = await auction.previewPrivateCard(product_id, kind);
+      return {
+        content: [
+          { type: 'image', data: jpg.toString('base64'), mimeType: 'image/jpeg' },
+          { type: 'text', text: JSON.stringify({ previewOnly: true, channelPublishing: false, kind, product_id }) },
+        ],
+      };
+    } catch (error) {
+      return { ...answer({ error: error instanceof Error ? error.message : String(error) }), isError: true };
+    }
+  });
+
+  server.registerTool('auction_private_notification_queue', {
+    description: 'Review pending and past private notices, including recipient, message, lot and status. Read only; no sends.',
+    inputSchema: { limit: z.number().int().min(1).max(100).default(30) },
+    annotations: read,
+  }, ({ limit }) => run(() => auction.listPrivateNotices(limit)));
+
+  server.registerTool('auction_queue_private_momentum', {
+    description: 'Queue a short, factual, private suspense message to MULTIPLE accepted bidders for one product. Sends only if auction private notifications have been separately enabled in Render. Never sends to all contacts, groups or Channels. Owner approval required before invoking.',
+    inputSchema: {
+      product_id: z.string().regex(/^\d{5,30}$/),
+      message_type: z.enum(['active', 'above_opening', 'competitive']),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+  }, ({ product_id, message_type }) => run(() => ({
+    queued: auction.queuePrivateMomentum(product_id, message_type),
+    note: 'Only opted-in bidders for this lot. Queued delivery is staggered; no Channel posts.',
+  })));
+
+  server.registerTool('auction_closing_review', {
+    description: 'Read-only review of closed lots, top confirmed bids and associated bidder IDs. Winner/payment notices are NEVER automatically sent.',
+    inputSchema: {}, annotations: read,
+  }, () => run(() => auction.closingReview()));
+
   server.registerTool('auction_publish_channel_graphic_now', {
     description: 'Publish one live branded auction digest to the configured WhatsApp Channel. This is a PUBLIC post; invoke only when the owner explicitly asks to send a live test or publish now. Requires a verified @newsletter Channel ID and enabled posting flags.',
     inputSchema: {}, annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },

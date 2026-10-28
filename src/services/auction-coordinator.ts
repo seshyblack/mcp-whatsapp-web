@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { AuctionBook, type AuctionLot, type AuctionDigestLot } from './auction.js';
 import { renderAuctionDigest } from './auction-poster.js';
+import { renderPrivateBidCard } from './auction-private-card.js';
 import type { SimpleMessage, WhatsAppBackend } from './backend.js';
 import { WhatsAppCatalog } from './catalog.js';
 import { log } from '../utils/logger.js';
@@ -47,6 +48,9 @@ export class AuctionCoordinator {
   private unsubscribe?: () => void;
   private timer?: NodeJS.Timeout;
   private serialized: Promise<void> = Promise.resolve();
+  private noticeTimer?: NodeJS.Timeout;
+  private delivering = false;
+  private stopped = false;
 
   constructor(private readonly whatsapp: WhatsAppBackend, config = auctionConfiguration()) {
     this.config = config;
@@ -63,15 +67,31 @@ export class AuctionCoordinator {
         });
       });
     }
-    if (this.config.enabled && this.config.channelPostEnabled && this.config.channelJid) this.scheduleHour();
+    if (this.config.enabled && this.config.autoAcknowledge && this.config.termsUrl) {
+      // All private sends run through one serialized queue, spaced to avoid a burst of messages.
+      this.noticeTimer = setInterval(() => {
+        try {
+          this.book.queueClosingReminders();
+          void this.drainPrivateNotices();
+        } catch (error) { log.error('Private auction reminder scheduling failed:', error); }
+      }, 30_000);
+      this.noticeTimer.unref?.();
+      void this.drainPrivateNotices();
+    }
+    // Deliberately no automatic public Channel publishing. The auction is now private only.
+
   }
 
   stop(): void {
+    this.stopped = true;
     this.unsubscribe?.();
     this.unsubscribe = undefined;
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
-    this.book.close();
+    if (this.noticeTimer) clearInterval(this.noticeTimer);
+    this.noticeTimer = undefined;
+    // The outbox remains on disk for review. Any interrupted send stays uncertain.
+    if (!this.delivering) this.book.close();
   }
 
   private async onIncoming(message: SimpleMessage): Promise<void> {
@@ -85,23 +105,77 @@ export class AuctionCoordinator {
       quotedText: message.quotedMessage?.text,
       receivedAt: Date.now(), fromMe: message.fromMe,
     });
-    if (!result.reply) return;
-    // Send only for explicit bid attempts/terms acceptance, never for ordinary messages or catalogue browsing.
-    // Never automatically retry an uncertain WhatsApp send.
-    await this.whatsapp.sendMessage(message.chatId!, result.reply);
+    // Leading and outbid notices are written in the same transaction that confirms the bid.
+    // Other transactional messages are also queued once per incoming WhatsApp stanza.
+    if (result.reply && result.status !== 'confirmed') {
+      this.book.queueInformation(message.chatId ?? '', stanzaId, result.reply);
+    }
+    void this.drainPrivateNotices();
   }
+
+  /** A single queue serves any number of eligible bidders, with no public broadcast. */
+  private async drainPrivateNotices(): Promise<void> {
+    if (this.delivering || this.stopped || !this.config.enabled ||
+      !this.config.autoAcknowledge || !this.config.termsUrl) return;
+    this.delivering = true;
+    try {
+      // Limit each sweep; the 30-second worker continues draining after the next tick.
+      for (let i = 0; i < 30 && !this.stopped; i++) {
+        const notice = this.book.claimNextNotice();
+        if (!notice) break;
+        try {
+          const lot = notice.productId ? this.book.getLot(notice.productId) : undefined;
+          const graphic = lot && ['leading', 'outbid', 'reminder_24h', 'reminder_1h', 'activity'].includes(notice.kind);
+          const result = graphic
+            ? await (async () => {
+                const image = await renderPrivateBidCard(lot!, notice.kind,
+                  notice.kind === 'leading' ? lot!.highestCents ?? undefined : undefined);
+                return this.whatsapp.sendMediaFromBase64(notice.chatId, image.toString('base64'),
+                  'image/jpeg', 'calmistry-private-auction.jpg', notice.text);
+              })()
+            : await this.whatsapp.sendMessage(notice.chatId, notice.text);
+          this.book.finishNotice(notice.id, result.id);
+        } catch (error) {
+          this.book.markNoticeUncertain(notice.id, error instanceof Error ? error.message : String(error));
+          log.error('A private auction notice has uncertain delivery and will not be resent automatically:', error);
+        }
+        // Sequential per-customer delivery protects the WhatsApp connection from a bulk-send burst.
+        if (i < 29 && !this.stopped) await new Promise(resolve => setTimeout(resolve, 4_000));
+      }
+    } finally {
+      this.delivering = false;
+      if (this.stopped) this.book.close();
+    }
+  }
+
+  /** Preview one single-lot private card without contacting a bidder. */
+  async previewPrivateCard(productId: string, kind: 'leading' | 'outbid' | 'activity' | 'reminder_1h'): Promise<Buffer> {
+    const lot = this.book.getLot(productId);
+    if (!lot) throw new Error('This product is not registered as an auction lot.');
+    return renderPrivateBidCard(lot, kind, kind === 'leading' ? lot.highestCents ?? undefined : undefined);
+  }
+
+  /** Owner-controlled suspense: never sent to strangers, only participants who accepted terms. */
+  queuePrivateMomentum(productId: string, kind: 'active' | 'above_opening' | 'competitive'): number {
+    return this.book.queuePrivateMomentum(productId, kind);
+  }
+
+  listPrivateNotices(limit = 30) { return this.book.listNotices(limit); }
+  closingReview() { return this.book.closingReview(); }
 
   addLots(lots: AuctionLot[]): number { return this.book.upsertLots(lots); }
   summary() {
     return {
       active: this.config.enabled,
       autoAcknowledgements: this.config.enabled && this.config.autoAcknowledge && !!this.config.termsUrl && !!this.whatsapp.onIncomingMessage,
-      channelPublishing: this.config.enabled && this.config.channelPostEnabled && !!this.config.channelJid,
+      channelPublishing: false, // Disabled: Calmistry is now running a fully private auction.
+      privateNotificationsEnabled: this.config.enabled && this.config.autoAcknowledge && !!this.config.termsUrl,
+      privateNoticeCounts: this.book.noticeCounts(),
       channelConfigured: !!this.config.channelJid,
       closeAt: this.config.closeAt,
       lotCount: this.book.digest().length,
       confirmedBidCount: this.book.bidCount(),
-      note: 'This does not enable auction bids or public posts until explicitly configured and tested.',
+      note: 'Private notices go only to accepted auction bidders, never to all WhatsApp contacts. Public Channel publishing stays OFF. Winning and payment instructions require owner approval.',
     };
   }
 
