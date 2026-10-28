@@ -10,7 +10,7 @@ function escapeXml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
-function wrap(s: string, maxLength = 29): string[] {
+function wrap(s: string, maxLength = 18): string[] {
   const output: string[] = [];
   for (const word of s.trim().replace(/\s+/g, ' ').split(' ')) {
     if (!output.length || output[output.length - 1]!.length + word.length + 1 > maxLength) output.push(word);
