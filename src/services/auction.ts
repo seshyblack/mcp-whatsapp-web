@@ -34,6 +34,18 @@ export interface AuctionDigestLot extends AuctionLot {
   bidCount: number;
 }
 
+export type PrivateNoticeKind = 'leading' | 'outbid' | 'reminder_24h' | 'reminder_1h' | 'activity' | 'information';
+export interface PrivateAuctionNotice {
+  id: number;
+  chatId: string;
+  productId: string | null;
+  kind: PrivateNoticeKind;
+  text: string;
+  eventKey: string;
+  status: 'queued' | 'sending' | 'sent' | 'uncertain' | 'skipped';
+  createdAt: number;
+}
+
 export function formatMYR(cents: number): string {
   return 'RM ' + (cents / 100).toLocaleString('en-MY', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 }
@@ -67,6 +79,9 @@ export class AuctionBook {
       'CREATE INDEX IF NOT EXISTS bids_lot_idx ON bids(product_id, status, amount_cents)',
       'CREATE TABLE IF NOT EXISTS agreements (chat_id TEXT PRIMARY KEY, accepted_at INTEGER NOT NULL)',
       'CREATE TABLE IF NOT EXISTS channel_posts (slot TEXT PRIMARY KEY, status TEXT NOT NULL, receipt TEXT, recorded_at INTEGER NOT NULL)',
+      // All private sends are durable and idempotent. Ambiguous failures are never retried automatically.
+      'CREATE TABLE IF NOT EXISTS private_notices (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT NOT NULL, product_id TEXT, kind TEXT NOT NULL, event_key TEXT NOT NULL, text TEXT NOT NULL, status TEXT NOT NULL DEFAULT \'queued\', created_at INTEGER NOT NULL, attempted_at INTEGER, receipt TEXT, UNIQUE(chat_id, kind, event_key))',
+      'CREATE INDEX IF NOT EXISTS private_notices_pending_idx ON private_notices(status,created_at)',
     ].join(';') + ';');
   }
 
@@ -119,8 +134,9 @@ export class AuctionBook {
       .get(productId) as { openingCents: number; closeAt: number } | undefined;
     if (!lot) return { status: 'needs_item' };
     if (message.receivedAt >= lot.closeAt) return { status: 'closed', productId, reply: 'Bidding for this lot has closed.' };
-    const highest = (this.db.prepare("SELECT MAX(amount_cents) AS amount FROM bids WHERE product_id=? AND status='confirmed'")
-      .get(productId) as { amount: number | null }).amount;
+    const previous = this.db.prepare("SELECT chat_id AS chatId, amount_cents AS amountCents FROM bids WHERE product_id=? AND status='confirmed' ORDER BY amount_cents DESC, seen_at ASC LIMIT 1")
+      .get(productId) as { chatId: string; amountCents: number } | undefined;
+    const highest = previous?.amountCents ?? null;
     const min = Math.max(lot.openingCents, (highest ?? 0) + 1);
     if (amount < min) {
       return { status: 'too_low', productId, reply: 'Thank you. The minimum eligible bid is ' + formatMYR(min) + '.' };
@@ -129,6 +145,16 @@ export class AuctionBook {
     if (!write.changes) {
       this.db.prepare("INSERT INTO bids (chat_id,stanza_id,product_id,amount_cents,seen_at,status) VALUES (?,?,?,?,?,'confirmed')")
         .run(message.chatId, message.stanzaId, productId, amount, message.receivedAt);
+    }
+    const lotName = (this.db.prepare('SELECT name FROM lots WHERE product_id=?').get(productId) as { name: string }).name;
+    this.enqueueNotice(message.chatId, productId, 'leading', message.stanzaId,
+      'Thank you — your bid of ' + formatMYR(amount) + ' for ' + lotName + ' is confirmed. You are currently leading.',
+      message.receivedAt);
+    // Only the previously leading bidder is privately notified. No public board, names or reserve values.
+    if (previous && previous.chatId !== message.chatId) {
+      this.enqueueNotice(previous.chatId, productId, 'outbid', message.stanzaId,
+        lotName + ' has moved beyond your bid. You are welcome to place a revised bid before closing.',
+        message.receivedAt);
     }
     // Per-lot rolling anti-sniping: a bid in the final three minutes extends this lot by three minutes.
     if (message.receivedAt >= lot.closeAt - 180_000) {
@@ -177,6 +203,138 @@ export class AuctionBook {
       }
       return this.confirm(message, lotId, amount);
     })();
+  }
+
+  private enqueueNotice(chatId: string, productId: string | null, kind: PrivateNoticeKind, eventKey: string, text: string, now: number): void {
+    this.db.prepare("INSERT OR IGNORE INTO private_notices(chat_id,product_id,kind,event_key,text,status,created_at) VALUES (?,?,?,?,?,'queued',?)")
+      .run(chatId, productId, kind, eventKey, text, now);
+  }
+
+  /** Queue a transactional acknowledgement once, even if WhatsApp redelivers an event. */
+  queueInformation(chatId: string, stanzaId: string, text: string, now = Date.now()): void {
+    if (!/^\d+@(s\.whatsapp\.net|lid)$/.test(chatId) || !stanzaId || !text) return;
+    this.enqueueNotice(chatId, null, 'information', stanzaId, text, now);
+  }
+
+  noticeCounts(): Record<string, number> {
+    const rows = this.db.prepare('SELECT status, COUNT(*) AS count FROM private_notices GROUP BY status')
+      .all() as { status: string; count: number }[];
+    return Object.fromEntries(rows.map(row => [row.status, row.count]));
+  }
+
+  getLot(productId: string): AuctionDigestLot | undefined {
+    return this.digest().find(lot => lot.productId === productId);
+  }
+
+  /** Read-only list for operator review; no sends occur. */
+  listNotices(limit = 30): PrivateAuctionNotice[] {
+    return this.db.prepare(`SELECT id,chat_id AS chatId,product_id AS productId,kind,event_key AS eventKey,text,status,created_at AS createdAt
+      FROM private_notices ORDER BY id DESC LIMIT ?`).all(Math.min(100, Math.max(1, limit))) as PrivateAuctionNotice[];
+  }
+
+  /** Never resend an unacknowledged prior attempt; an operator must investigate it manually. */
+  claimNextNotice(now = Date.now()): PrivateAuctionNotice | null {
+    return this.db.transaction(() => {
+      for (let iteration = 0; iteration < 100; iteration++) {
+        const row = this.db.prepare(`SELECT id,chat_id AS chatId,product_id AS productId,kind,event_key AS eventKey,text,status,created_at AS createdAt
+          FROM private_notices WHERE status='queued' ORDER BY id ASC LIMIT 1`).get() as PrivateAuctionNotice | undefined;
+        if (!row) return null;
+        const lot = row.productId ? this.db.prepare('SELECT close_at AS closeAt FROM lots WHERE product_id=?')
+          .get(row.productId) as { closeAt: number } | undefined : undefined;
+        const expired = row.kind !== 'information' && !!lot && now >= lot.closeAt;
+        const olderThanDay = now - row.createdAt > 24 * 60 * 60_000;
+        const staleLead = row.kind === 'leading' && !!row.productId && (() => {
+          const first = this.db.prepare("SELECT chat_id AS chatId FROM bids WHERE product_id=? AND status='confirmed' ORDER BY amount_cents DESC, seen_at ASC LIMIT 1")
+            .get(row.productId) as { chatId: string } | undefined;
+          return first?.chatId !== row.chatId;
+        })();
+        if (expired || olderThanDay || staleLead) {
+          this.db.prepare("UPDATE private_notices SET status='skipped',receipt=? WHERE id=?")
+            .run(expired ? 'Lot closed' : staleLead ? 'Bid no longer leading' : 'Expired in queue', row.id);
+          continue;
+        }
+        this.db.prepare("UPDATE private_notices SET status='sending',attempted_at=? WHERE id=? AND status='queued'").run(now, row.id);
+        return { ...row, status: 'sending' as const };
+      }
+      return null;
+    })();
+  }
+
+  finishNotice(id: number, receipt: string): void {
+    this.db.prepare("UPDATE private_notices SET status='sent',receipt=? WHERE id=? AND status='sending'")
+      .run(receipt, id);
+  }
+  markNoticeUncertain(id: number, reason: string): void {
+    this.db.prepare("UPDATE private_notices SET status='uncertain',receipt=? WHERE id=? AND status='sending'")
+      .run(reason.slice(0,250), id);
+  }
+
+  /** Only accepted bidders in each relevant lot receive private closing reminders. */
+  queueClosingReminders(now = Date.now()): number {
+    let queued = 0;
+    const lots = this.db.prepare('SELECT product_id AS productId,name,close_at AS closeAt FROM lots WHERE close_at>? AND close_at<=?')
+      .all(now, now + 24 * 60 * 60_000) as { productId: string; name: string; closeAt: number }[];
+    this.db.transaction(() => {
+      for (const lot of lots) {
+        const remaining = lot.closeAt - now;
+        // Never deliver both reminders during the last hour.
+        const kind: PrivateNoticeKind = remaining <= 60 * 60_000 ? 'reminder_1h' : 'reminder_24h';
+        const stage = kind === 'reminder_1h' ? 'Final hour' : 'Closing tomorrow';
+        const recipients = this.db.prepare(`SELECT DISTINCT b.chat_id AS chatId FROM bids b
+          JOIN agreements a ON a.chat_id=b.chat_id
+          WHERE b.product_id=? AND b.status='confirmed'`).all(lot.productId) as { chatId: string }[];
+        for (const person of recipients) {
+          const eventKey = lot.productId + ':' + kind + ':' + lot.closeAt;
+          const before = this.db.prepare('SELECT 1 FROM private_notices WHERE chat_id=? AND kind=? AND event_key=?')
+            .get(person.chatId, kind, eventKey);
+          if (before) continue;
+          const text = stage + ': bidding for ' + lot.name + ' closes at ' +
+            new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kuala_Lumpur', hour: '2-digit', minute: '2-digit', hour12: true }).format(lot.closeAt) +
+            ' MYT. You are welcome to revise your bid before then.';
+          this.enqueueNotice(person.chatId, lot.productId, kind, eventKey, text, now);
+          queued++;
+        }
+      }
+    })();
+    return queued;
+  }
+
+  /** Owner-triggered factual suspense update, limited to accepted bidders in the selected lot. */
+  queuePrivateMomentum(productId: string, kind: 'active' | 'above_opening' | 'competitive', now = Date.now()): number {
+    const lot = this.getLot(productId);
+    if (!lot) throw new Error('Unknown auction lot.');
+    const bidders = this.db.prepare(`SELECT DISTINCT b.chat_id AS chatId FROM bids b
+      JOIN agreements a ON a.chat_id=b.chat_id
+      WHERE b.product_id=? AND b.status='confirmed'`).all(productId) as { chatId: string }[];
+    const competitiveCount = bidders.length;
+    if (!bidders.length || (kind === 'above_opening' && (lot.highestCents ?? 0) <= lot.openingCents) ||
+      (kind === 'competitive' && competitiveCount < 2)) throw new Error('Cannot send a suspense update that is not supported by actual bids.');
+    const message = kind === 'active' ? 'This piece now has active bidding.'
+      : kind === 'above_opening' ? 'Bidding for this piece has moved above the opening bid.'
+        : 'This piece is becoming competitive.';
+    const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kuala_Lumpur', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+    let count = 0;
+    this.db.transaction(() => {
+      for (const person of bidders) {
+        const eventKey = productId + ':' + day + ':' + kind;
+        const old = this.db.prepare('SELECT 1 FROM private_notices WHERE chat_id=? AND kind=? AND event_key=?')
+          .get(person.chatId, 'activity', eventKey);
+        if (old) continue;
+        this.enqueueNotice(person.chatId, productId, 'activity', eventKey, lot.name + ': ' + message, now);
+        count++;
+      }
+    })();
+    return count;
+  }
+
+  /** End-of-auction is owner reviewed: do not automatically announce a winner or collect payment. */
+  closingReview(now = Date.now()): Array<{ productId: string; name: string; closeAt: number; highestCents: number | null; leaderChatId: string | null; bidCount: number }> {
+    const rows = this.db.prepare(`SELECT l.product_id AS productId,l.name,l.close_at AS closeAt,
+      (SELECT MAX(b.amount_cents) FROM bids b WHERE b.product_id=l.product_id AND b.status='confirmed') AS highestCents,
+      (SELECT b.chat_id FROM bids b WHERE b.product_id=l.product_id AND b.status='confirmed' ORDER BY b.amount_cents DESC, b.seen_at ASC LIMIT 1) AS leaderChatId,
+      (SELECT COUNT(*) FROM bids b WHERE b.product_id=l.product_id AND b.status='confirmed') AS bidCount
+      FROM lots l WHERE l.close_at<=? ORDER BY l.name`).all(now);
+    return rows as Array<{ productId: string; name: string; closeAt: number; highestCents: number | null; leaderChatId: string | null; bidCount: number }>;
   }
 
   /** Claims a post slot before sending; uncertain sends are NOT retried automatically. */
