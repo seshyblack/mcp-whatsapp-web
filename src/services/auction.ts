@@ -1,0 +1,195 @@
+import Database from 'better-sqlite3';
+import { mkdirSync } from 'node:fs';
+import path from 'node:path';
+
+export interface AuctionLot {
+  productId: string;
+  name: string;
+  openingCents: number;
+  imageUrl?: string;
+  currency: 'MYR';
+}
+
+export interface AuctionMessage {
+  chatId: string;
+  stanzaId: string;
+  body: string;
+  type: string;
+  productId?: string;
+  quotedStanzaId?: string;
+  quotedText?: string;
+  receivedAt: number;
+  fromMe: boolean;
+}
+
+export interface AuctionResponse {
+  status: 'ignored' | 'selected' | 'pending_terms' | 'confirmed' | 'too_low' | 'needs_item' | 'closed' | 'terms_pending' | 'duplicate';
+  reply?: string;
+  productId?: string;
+  amountCents?: number;
+}
+
+export interface AuctionDigestLot extends AuctionLot {
+  highestCents: number | null;
+  bidCount: number;
+}
+
+export function formatMYR(cents: number): string {
+  return 'RM ' + (cents / 100).toLocaleString('en-MY', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+}
+
+export function parseBidCents(body: string): number | null {
+  const amount = body.trim().match(/(?:\bRM\s*|\bMYR\s*|^\s*(?:my\s+|new\s+)?bid\s*(?:is\s*)?[:=]?\s*)([0-9][0-9,]*(?:\.[0-9]{1,2})?)/i);
+  if (!amount) return null;
+  const decimal = amount[1]!.replace(/,/g, '');
+  const value = Number(decimal);
+  if (!Number.isFinite(value) || value <= 0 || value > 1_000_000_000) return null;
+  return Math.round(value * 100);
+}
+
+export function productIdFromText(text: string): string | null {
+  const match = text.match(/(?:https?:\/\/)?wa\.me\/p\/(\d{5,30})\/\d{6,15}/i);
+  return match?.[1] ?? null;
+}
+
+/** Separate persistence from the WhatsApp session database; no network calls in a transaction. */
+export class AuctionBook {
+  private readonly db: Database.Database;
+  constructor(file: string, private readonly termsUrl: string, private readonly closeAtMs: number) {
+    mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    this.db = new Database(file);
+    this.db.pragma('journal_mode = WAL');
+    this.db.pragma('synchronous = FULL');
+    this.db.exec([
+      'CREATE TABLE IF NOT EXISTS lots (product_id TEXT PRIMARY KEY, name TEXT NOT NULL, opening_cents INTEGER NOT NULL, currency TEXT NOT NULL, image_url TEXT, close_at INTEGER NOT NULL)',
+      'CREATE TABLE IF NOT EXISTS selections (chat_id TEXT NOT NULL, stanza_id TEXT NOT NULL, product_id TEXT NOT NULL, seen_at INTEGER NOT NULL, PRIMARY KEY(chat_id, stanza_id))',
+      'CREATE TABLE IF NOT EXISTS bids (chat_id TEXT NOT NULL, stanza_id TEXT NOT NULL, product_id TEXT NOT NULL, amount_cents INTEGER NOT NULL, seen_at INTEGER NOT NULL, status TEXT NOT NULL, PRIMARY KEY(chat_id, stanza_id))',
+      'CREATE INDEX IF NOT EXISTS bids_lot_idx ON bids(product_id, status, amount_cents)',
+      'CREATE TABLE IF NOT EXISTS agreements (chat_id TEXT PRIMARY KEY, accepted_at INTEGER NOT NULL)',
+      'CREATE TABLE IF NOT EXISTS channel_posts (slot TEXT PRIMARY KEY, status TEXT NOT NULL, receipt TEXT, recorded_at INTEGER NOT NULL)',
+    ].join(';') + ';');
+  }
+
+  close(): void { this.db.close(); }
+
+  upsertLots(lots: AuctionLot[]): number {
+    const write = this.db.prepare('INSERT INTO lots (product_id,name,opening_cents,currency,image_url,close_at) VALUES (?,?,?,?,?,?) ON CONFLICT(product_id) DO UPDATE SET name=excluded.name, image_url=excluded.image_url');
+    return this.db.transaction(() => {
+      for (const lot of lots) {
+        if (!/^\d{5,30}$/.test(lot.productId) || !lot.name || !Number.isSafeInteger(lot.openingCents) || lot.openingCents <= 0 || lot.currency !== 'MYR') {
+          throw new Error('Invalid MYR auction lot. Use Meta product ID, name and positive opening bid.');
+        }
+        write.run(lot.productId, lot.name, lot.openingCents, lot.currency, lot.imageUrl ?? null, this.closeAtMs);
+      }
+      return lots.length;
+    })();
+  }
+
+  digest(): AuctionDigestLot[] {
+    const rows = this.db.prepare(`SELECT l.product_id AS productId, l.name, l.opening_cents AS openingCents,
+      l.image_url AS imageUrl, l.currency, MAX(b.amount_cents) AS highestCents,
+      COUNT(b.stanza_id) AS bidCount
+      FROM lots l LEFT JOIN bids b ON b.product_id = l.product_id AND b.status = 'confirmed'
+      GROUP BY l.product_id ORDER BY bidCount DESC, l.name ASC`).all() as AuctionDigestLot[];
+    return rows.map(row => ({ ...row, imageUrl: row.imageUrl || undefined }));
+  }
+
+  bidCount(): number {
+    return (this.db.prepare("SELECT COUNT(*) AS n FROM bids WHERE status = 'confirmed'").get() as { n: number }).n;
+  }
+
+  /** Return the strongest known lot reference: quoted item, quoted bid, explicit product link,
+   * or exactly one item shared in this chat in the last 15 minutes. Ambiguous messages never become bids. */
+  private resolveLot(message: AuctionMessage): string | null {
+    const explicit = message.productId ?? productIdFromText(message.body) ?? productIdFromText(message.quotedText ?? '');
+    if (explicit && this.db.prepare('SELECT 1 FROM lots WHERE product_id=?').get(explicit)) return explicit;
+    if (message.quotedStanzaId) {
+      const quote = this.db.prepare(`SELECT product_id AS productId FROM bids WHERE chat_id=? AND stanza_id=?
+        UNION ALL SELECT product_id AS productId FROM selections WHERE chat_id=? AND stanza_id=? LIMIT 1`)
+        .get(message.chatId, message.quotedStanzaId, message.chatId, message.quotedStanzaId) as { productId: string } | undefined;
+      if (quote) return quote.productId;
+    }
+    const recent = this.db.prepare('SELECT DISTINCT product_id AS productId FROM selections WHERE chat_id=? AND seen_at>=?')
+      .all(message.chatId, message.receivedAt - 15 * 60_000) as { productId: string }[];
+    return recent.length === 1 ? recent[0]!.productId : null;
+  }
+
+  private confirm(message: AuctionMessage, productId: string, amount: number): AuctionResponse {
+    const lot = this.db.prepare('SELECT opening_cents AS openingCents, close_at AS closeAt FROM lots WHERE product_id=?')
+      .get(productId) as { openingCents: number; closeAt: number } | undefined;
+    if (!lot) return { status: 'needs_item' };
+    if (message.receivedAt >= lot.closeAt) return { status: 'closed', productId, reply: 'Bidding for this lot has closed.' };
+    const highest = (this.db.prepare("SELECT MAX(amount_cents) AS amount FROM bids WHERE product_id=? AND status='confirmed'")
+      .get(productId) as { amount: number | null }).amount;
+    const min = Math.max(lot.openingCents, (highest ?? 0) + 1);
+    if (amount < min) {
+      return { status: 'too_low', productId, reply: 'Thank you. The minimum eligible bid is ' + formatMYR(min) + '.' };
+    }
+    const write = this.db.prepare("UPDATE bids SET status='confirmed' WHERE chat_id=? AND stanza_id=?").run(message.chatId, message.stanzaId);
+    if (!write.changes) {
+      this.db.prepare("INSERT INTO bids (chat_id,stanza_id,product_id,amount_cents,seen_at,status) VALUES (?,?,?,?,?,'confirmed')")
+        .run(message.chatId, message.stanzaId, productId, amount, message.receivedAt);
+    }
+    // Per-lot rolling anti-sniping: a bid in the final three minutes extends this lot by three minutes.
+    if (message.receivedAt >= lot.closeAt - 180_000) {
+      this.db.prepare('UPDATE lots SET close_at=? WHERE product_id=?').run(message.receivedAt + 180_000, productId);
+    }
+    return { status: 'confirmed', productId, amountCents: amount, reply: 'Thank you. Your bid of ' + formatMYR(amount) + ' has been recorded.' };
+  }
+
+  /** Must be called only for live, incoming private-chat messages (not history or ordinary outbound texts). */
+  handle(message: AuctionMessage): AuctionResponse {
+    if (message.fromMe || !/^\d+@(s\.whatsapp\.net|lid)$/.test(message.chatId)) return { status: 'ignored' };
+    return this.db.transaction((): AuctionResponse => {
+      const productId = message.productId ?? productIdFromText(message.body);
+      if (productId && this.db.prepare('SELECT 1 FROM lots WHERE product_id=?').get(productId)) {
+        this.db.prepare('INSERT OR IGNORE INTO selections(chat_id,stanza_id,product_id,seen_at) VALUES(?,?,?,?)')
+          .run(message.chatId, message.stanzaId, productId, message.receivedAt);
+      }
+      if (/^I AGREE[.!\s]*$/i.test(message.body.trim())) {
+        const pending = this.db.prepare("SELECT chat_id AS chatId, stanza_id AS stanzaId, product_id AS productId, amount_cents AS amountCents, seen_at AS seenAt FROM bids WHERE chat_id=? AND status='pending_terms' ORDER BY seen_at ASC")
+          .all(message.chatId) as Array<{ chatId: string; stanzaId: string; productId: string; amountCents: number; seenAt: number }>;
+        if (!pending.length) return { status: 'ignored' };
+        this.db.prepare('INSERT OR IGNORE INTO agreements(chat_id,accepted_at) VALUES(?,?)').run(message.chatId, message.receivedAt);
+        const accepted: string[] = [];
+        for (const bid of pending) {
+          // A pending bid must not win by accepting after the lot closes.
+          const result = this.confirm({ ...message, stanzaId: bid.stanzaId }, bid.productId, bid.amountCents);
+          if (result.status === 'confirmed') accepted.push(formatMYR(bid.amountCents) + ' for ' + bid.productId);
+          else this.db.prepare("UPDATE bids SET status='declined' WHERE chat_id=? AND stanza_id=?").run(message.chatId, bid.stanzaId);
+        }
+        return { status: 'confirmed', reply: accepted.length
+          ? 'Thank you for accepting the auction terms. Confirmed bids: ' + accepted.join('; ') + '.'
+          : 'Thank you. Your pending bid is no longer eligible; please place a fresh bid.' };
+      }
+      const amount = parseBidCents(message.body);
+      if (amount == null) return productId ? { status: 'selected', productId } : { status: 'ignored' };
+      if (this.db.prepare('SELECT 1 FROM bids WHERE chat_id=? AND stanza_id=?').get(message.chatId, message.stanzaId)) return { status: 'duplicate' };
+      const lotId = this.resolveLot(message);
+      if (!lotId) return { status: 'needs_item', reply: 'Please share the catalogue item with your bid so I can identify the correct piece.' };
+      if (!this.db.prepare('SELECT 1 FROM agreements WHERE chat_id=?').get(message.chatId)) {
+        // This requires owner-configured terms; otherwise no customer-facing automated reply is safe.
+        if (!this.termsUrl) return { status: 'terms_pending', productId: lotId };
+        this.db.prepare("INSERT INTO bids(chat_id,stanza_id,product_id,amount_cents,seen_at,status) VALUES (?,?,?,?,?,'pending_terms')")
+          .run(message.chatId, message.stanzaId, lotId, amount, message.receivedAt);
+        return { status: 'pending_terms', productId: lotId, amountCents: amount,
+          reply: 'Before I confirm your bid, please review our auction terms: ' + this.termsUrl + ' . Reply I AGREE if you accept them.' };
+      }
+      return this.confirm(message, lotId, amount);
+    })();
+  }
+
+  /** Claims a post slot before sending; uncertain sends are NOT retried automatically. */
+  claimPost(slot: string, now = Date.now()): boolean {
+    return this.db.prepare("INSERT OR IGNORE INTO channel_posts(slot,status,recorded_at) VALUES (?,'sending',?)").run(slot, now).changes === 1;
+  }
+  completePost(slot: string, receipt: string): void {
+    this.db.prepare("UPDATE channel_posts SET status='sent',receipt=? WHERE slot=? AND status='sending'").run(receipt, slot);
+  }
+  uncertainPost(slot: string, details: string): void {
+    this.db.prepare("UPDATE channel_posts SET status='uncertain',receipt=? WHERE slot=? AND status='sending'").run(details.slice(0,300), slot);
+  }
+  postStatus(slot: string): string | null {
+    return (this.db.prepare('SELECT status FROM channel_posts WHERE slot=?').get(slot) as { status: string } | undefined)?.status ?? null;
+  }
+}

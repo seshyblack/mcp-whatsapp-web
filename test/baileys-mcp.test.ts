@@ -118,6 +118,36 @@ describe('MCP tools with the real Baileys adapter and SQLite (offline)', () => {
     expect(original.quotedMessage).toBeUndefined();
   });
 
+  it('emits native shared products only from live private messages, never from sync history', async () => {
+    const { service, sockets, call } = await fixture();
+    const incoming = vi.fn();
+    service.onIncomingMessage(incoming);
+    const peer = '15550000002@s.whatsapp.net';
+    sockets[0].ev.emit('messages.upsert', {
+      type: 'notify',
+      messages: [{
+        key: { id: 'shared-product', remoteJid: peer, fromMe: false },
+        message: { productMessage: { product: { productId: '28881984484829546' } } },
+        messageTimestamp: 1700000045,
+      }],
+    });
+    expect(incoming).toHaveBeenCalledOnce();
+    expect(incoming).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'product', productId: '28881984484829546', fromMe: false,
+    }));
+    const messages = JSON.parse(await call('list_messages', { chat_id: peer, limit: 10 }));
+    expect(messages.find((item: { productId?: string }) => item.productId === '28881984484829546')).toBeDefined();
+    sockets[0].ev.emit('messages.upsert', {
+      type: 'append',
+      messages: [{
+        key: { id: 'old-history', remoteJid: peer, fromMe: false },
+        message: { conversation: 'Old history' },
+        messageTimestamp: 1700000020,
+      }],
+    });
+    expect(incoming).toHaveBeenCalledOnce();
+  });
+
   it('explicit MCP logout clears a disconnected account before pairing again', async () => {
     const { service, sockets, call } = await fixture();
     await service.destroy();

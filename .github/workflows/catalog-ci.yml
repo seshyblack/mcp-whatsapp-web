@@ -29,4 +29,4 @@ jobs:
       # claiming all upstream tests pass; validate the changed catalogue path
       # and existing registered MCP tools as a release gate.
       - name: Catalogue, MCP and quoted-message regression tests
-        run: npx vitest run test/catalog.test.ts test/tools.test.ts test/baileys-mcp.test.ts
+        run: npx vitest run test/catalog.test.ts test/tools.test.ts test/baileys-mcp.test.ts test/auction.test.ts

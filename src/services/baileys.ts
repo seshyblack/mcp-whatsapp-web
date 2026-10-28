@@ -115,6 +115,7 @@ export class BaileysService implements WhatsAppBackend {
   private readonly historySyncTypes = new Set<number>();
   private readonly groupCache = new Map<string, { value: GroupMetadata; expiresAt: number }>();
   private readonly listeners = new Set<() => void>();
+  private readonly incomingObservers = new Set<(message: SimpleMessage) => void>();
   private readonly detachListeners: Array<() => void> = [];
   private readonly historyRequests = new Map<string, number>();
   private readonly historyInflight = new Map<string, Promise<void>>();
@@ -287,7 +288,20 @@ export class BaileysService implements WhatsAppBackend {
       } : {}),
     }))));
     on('chats.delete', chats => store.deleteChats(chats));
-    on('messages.upsert', data => store.upsertMessages(data.messages));
+    on('messages.upsert', data => {
+      store.upsertMessages(data.messages);
+      if (data.type !== 'notify' || !this.incomingObservers.size) return;
+      for (const raw of data.messages) {
+        if (raw.key.fromMe || !raw.message || !raw.key.remoteJid) continue;
+        try {
+          const message = this.mapMessage(raw);
+          if (!/^\d+@(s\.whatsapp\.net|lid)$/.test(message.chatId ?? '')) continue;
+          for (const listener of this.incomingObservers) {
+            try { listener(message); } catch (error) { log.warn('Auction message observer failed:', error); }
+          }
+        } catch (error) { log.warn('Could not map incoming auction message:', error); }
+      }
+    });
     on('messages.update', updates => store.updateMessages(updates));
     on('messages.delete', data => store.deleteMessages(data));
     on('lid-mapping.update', mapping => store.setLidMapping(mapping.lid, mapping.pn));
@@ -437,6 +451,10 @@ export class BaileysService implements WhatsAppBackend {
   getLatestQrCode(): string | null { return this.latestQr; }
   getLatestPairingCode(): string | null { return this.latestPairing; }
   onSessionInvalidated(listener: () => void): void { this.listeners.add(listener); }
+  onIncomingMessage(listener: (message: SimpleMessage) => void): () => void {
+    this.incomingObservers.add(listener);
+    return () => { this.incomingObservers.delete(listener); };
+  }
 
   private notifySessionInvalidated(): void {
     for (const listener of this.listeners) {
@@ -735,6 +753,8 @@ export class BaileysService implements WhatsAppBackend {
     const senderContact = !fromMe && chatId.endsWith('@g.us') ? this.requireStore().getContact(senderId) : undefined;
     const senderName = senderContact?.name ?? senderContact?.notify ?? messageInfo.pushName ?? null;
     const media = content?.imageMessage ?? content?.videoMessage ?? content?.audioMessage ?? content?.documentMessage ?? content?.stickerMessage;
+    const snapshot = content?.productMessage?.product as { productId?: string | null } | undefined;
+    const nativeProductId = snapshot?.productId || undefined;
     // Reply metadata may accompany text, images, documents or other media messages.
     // Read only known Baileys contextInfo locations and never infer a quote from adjacency.
     const context = content?.extendedTextMessage?.contextInfo
@@ -771,6 +791,7 @@ export class BaileysService implements WhatsAppBackend {
       ...(senderAlt ? { senderAlt } : {}),
       ...(senderName ? { senderName } : {}),
       ...(quotedMessage ? { quotedMessage } : {}),
+      ...(nativeProductId ? { productId: nativeProductId } : {}),
     };
   }
 }

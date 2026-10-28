@@ -37,6 +37,8 @@ export interface SimpleMessage {
   senderParticipant?: string;
   senderAlt?: string;
   senderName?: string | null;
+  /** Meta catalogue product ID, when WhatsApp sends a native product message. */
+  productId?: string;
   /** WhatsApp quoted/replied-to message metadata (if present). Does not imply the quoted message exists locally. */
   quotedMessage?: {
     stanzaId: string;
@@ -86,6 +88,8 @@ export interface WhatsAppBackend {
   waitForAuthOutcome(timeoutMs?: number): Promise<void>;
   ensureReady(timeoutMs?: number): Promise<void>;
   onSessionInvalidated(listener: () => void): void;
+  /** Only live incoming messages, never historical sync. Optional for non-Baileys drivers. */
+  onIncomingMessage?(listener: (message: SimpleMessage) => void): () => void;
   getStatus(): BackendStatus;
   searchContacts(query: string): Promise<SimpleContact[]>;
   getContactById(contactId: string): Promise<SimpleContact | null>;
