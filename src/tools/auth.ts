@@ -20,9 +20,46 @@ export function registerAuthTools(
     'get_backend_status',
     'Report the selected WhatsApp backend, connection status, and available history. Baileys queries cover locally synchronized history; available does not imply a complete archive.',
     {},
-    async (): Promise<CallToolResult> => ({
-      content: [{ type: 'text', text: JSON.stringify(whatsappService.getStatus(), null, 2) }],
-    }),
+    async (): Promise<CallToolResult> => {
+      const status = whatsappService.getStatus();
+      const inviteUrl = process.env.AUCTION_CHANNEL_INVITE_URL;
+      if (!inviteUrl || !status.authenticated || !whatsappService.resolveChannelInvite) {
+        return { content: [{ type: 'text', text: JSON.stringify(status, null, 2) }] };
+      }
+      try {
+        const channel = await whatsappService.resolveChannelInvite(inviteUrl);
+        return { content: [{ type: 'text', text: JSON.stringify({ ...status, auctionChannel: channel }, null, 2) }] };
+      } catch (error) {
+        return { content: [{ type: 'text', text: JSON.stringify({
+          ...status, auctionChannel: {
+            error: error instanceof Error ? error.message : String(error),
+          },
+        }, null, 2) }] };
+      }
+    },
+  );
+
+  server.tool(
+    'resolve_whatsapp_channel',
+    'Read-only: resolve a WhatsApp Channel invitation URL to its actual internal @newsletter ID and check the linked account viewer role. Does not post, follow, or edit the Channel.',
+    {
+      invite_url: z.string().url().describe('Full https://whatsapp.com/channel/... invitation URL'),
+    },
+    async ({ invite_url }): Promise<CallToolResult> => {
+      if (!whatsappService.resolveChannelInvite) return {
+        content: [{ type: 'text', text: 'Channel lookup is unavailable on this WhatsApp backend.' }],
+        isError: true,
+      };
+      try {
+        const result = await whatsappService.resolveChannelInvite(invite_url);
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      } catch (error) {
+        return {
+          content: [{ type: 'text', text: error instanceof Error ? error.message : String(error) }],
+          isError: true,
+        };
+      }
+    },
   );
 
   server.tool(

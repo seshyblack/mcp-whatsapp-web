@@ -60,6 +60,14 @@ export interface MediaData {
   filesize?: number | null;
 }
 
+export interface WhatsAppChannelInfo {
+  id: string;
+  name: string;
+  inviteCode: string;
+  viewerRole: 'OWNER' | 'ADMIN' | 'SUBSCRIBER' | 'GUEST' | 'UNKNOWN';
+  subscribers?: number;
+}
+
 export interface BackendStatus {
   backend: 'webjs' | 'baileys';
   authenticated: boolean;
@@ -78,6 +86,8 @@ export interface BackendStatus {
 export interface WhatsAppBackend {
   getGroupMembers?(groupId: string): Promise<GroupMember[]>;
   readonly backend: 'webjs' | 'baileys';
+  /** Read-only lookup. Resolve a WhatsApp Channel invite link to its actual @newsletter JID. */
+  resolveChannelInvite?(inviteUrl: string): Promise<WhatsAppChannelInfo>;
   initialize(): Promise<void>;
   destroy(): Promise<void>;
   logout(): Promise<void>;

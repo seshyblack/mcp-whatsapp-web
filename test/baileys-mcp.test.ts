@@ -26,6 +26,10 @@ function socket() {
       message: { conversation: content.text }, messageTimestamp: 1700000020,
     })),
     groupMetadata: vi.fn(async (jid: string) => ({ id: jid, subject: 'Group', participants: [] })),
+    newsletterMetadata: vi.fn(async (type: string, code: string) => ({
+      id: '120363246813579024@newsletter', name: 'Calmistry Rattan',
+      subscribers: 42, viewer_metadata: { role: 'OWNER' },
+    })),
     fetchMessageHistory: vi.fn(async () => 'request'),
     updateMediaMessage: vi.fn(),
   };
@@ -68,6 +72,29 @@ async function fixture() {
 }
 
 describe('MCP tools with the real Baileys adapter and SQLite (offline)', () => {
+  it('resolves a Channel invitation without changing membership or publishing', async () => {
+    const { sockets, call } = await fixture();
+    const link = 'https://whatsapp.com/channel/0029VaWrDAiJUM2Ya2RZq417';
+    const info = JSON.parse(await call('resolve_whatsapp_channel', { invite_url: link }));
+    expect(info).toEqual({
+      id: '120363246813579024@newsletter', name: 'Calmistry Rattan',
+      inviteCode: '0029VaWrDAiJUM2Ya2RZq417', viewerRole: 'OWNER', subscribers: 42,
+    });
+    expect(sockets[0].newsletterMetadata).toHaveBeenCalledWith('invite', '0029VaWrDAiJUM2Ya2RZq417');
+    const previous = process.env.AUCTION_CHANNEL_INVITE_URL;
+    process.env.AUCTION_CHANNEL_INVITE_URL = link;
+    try {
+      const status = JSON.parse(await call('get_backend_status'));
+      expect(status.auctionChannel).toEqual(info);
+      expect(status.authenticated).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.AUCTION_CHANNEL_INVITE_URL;
+      else process.env.AUCTION_CHANNEL_INVITE_URL = previous;
+    }
+    await expect(call('resolve_whatsapp_channel', { invite_url: 'https://evil.example/channel/anything' }))
+      .rejects.toThrow('whatsapp.com/channel');
+  });
+
   it('round-trips incoming/outgoing IDs and restores history across restart', async () => {
     const { service, sockets, call } = await fixture();
     const contacts = JSON.parse(await call('search_contacts', { query: 'Alice' }));
