@@ -37,6 +37,13 @@ export interface SimpleMessage {
   senderParticipant?: string;
   senderAlt?: string;
   senderName?: string | null;
+  /** WhatsApp quoted/replied-to message metadata (if present). Does not imply the quoted message exists locally. */
+  quotedMessage?: {
+    stanzaId: string;
+    chatId?: string;
+    participant?: string;
+    text?: string;
+  };
 }
 
 export interface SentMessage {
