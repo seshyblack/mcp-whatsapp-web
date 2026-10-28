@@ -39,7 +39,7 @@ export function formatMYR(cents: number): string {
 }
 
 export function parseBidCents(body: string): number | null {
-  const amount = body.trim().match(/(?:\\bRM\\s*|\\bMYR\\s*|^\\s*(?:my\\s+|new\\s+)?bid\\s*(?:is\\s*)?[:=]?\\s*)([0-9][0-9,]*(?:\\.[0-9]{1,2})?)/i);
+  const amount = body.trim().match(/(?:\bRM\s*|\bMYR\s*|^\s*(?:my\s+|new\s+)?bid\s*(?:is\s*)?[:=]?\s*)([0-9][0-9,]*(?:\.[0-9]{1,2})?)/i);
   if (!amount) return null;
   const decimal = amount[1]!.replace(/,/g, '');
   const value = Number(decimal);
@@ -48,7 +48,7 @@ export function parseBidCents(body: string): number | null {
 }
 
 export function productIdFromText(text: string): string | null {
-  const match = text.match(/(?:https?:\\/\\/)?wa\\.me\\/p\\/(\\d{5,30})\\/\\d{6,15}/i);
+  const match = text.match(/(?:https?:\/\/)?wa\.me\/p\/(\d{5,30})\/\d{6,15}/i);
   return match?.[1] ?? null;
 }
 
@@ -76,7 +76,7 @@ export class AuctionBook {
     const write = this.db.prepare('INSERT INTO lots (product_id,name,opening_cents,currency,image_url,close_at) VALUES (?,?,?,?,?,?) ON CONFLICT(product_id) DO UPDATE SET name=excluded.name, image_url=excluded.image_url');
     return this.db.transaction(() => {
       for (const lot of lots) {
-        if (!/^\\d{5,30}$/.test(lot.productId) || !lot.name || !Number.isSafeInteger(lot.openingCents) || lot.openingCents <= 0 || lot.currency !== 'MYR') {
+        if (!/^\d{5,30}$/.test(lot.productId) || !lot.name || !Number.isSafeInteger(lot.openingCents) || lot.openingCents <= 0 || lot.currency !== 'MYR') {
           throw new Error('Invalid MYR auction lot. Use Meta product ID, name and positive opening bid.');
         }
         write.run(lot.productId, lot.name, lot.openingCents, lot.currency, lot.imageUrl ?? null, this.closeAtMs);
@@ -139,14 +139,14 @@ export class AuctionBook {
 
   /** Must be called only for live, incoming private-chat messages (not history or ordinary outbound texts). */
   handle(message: AuctionMessage): AuctionResponse {
-    if (message.fromMe || !/^\\d+@(s\\.whatsapp\\.net|lid)$/.test(message.chatId)) return { status: 'ignored' };
+    if (message.fromMe || !/^\d+@(s\.whatsapp\.net|lid)$/.test(message.chatId)) return { status: 'ignored' };
     return this.db.transaction((): AuctionResponse => {
       const productId = message.productId ?? productIdFromText(message.body);
       if (productId && this.db.prepare('SELECT 1 FROM lots WHERE product_id=?').get(productId)) {
         this.db.prepare('INSERT OR IGNORE INTO selections(chat_id,stanza_id,product_id,seen_at) VALUES(?,?,?,?)')
           .run(message.chatId, message.stanzaId, productId, message.receivedAt);
       }
-      if (/^I AGREE[.!\\s]*$/i.test(message.body.trim())) {
+      if (/^I AGREE[.!\s]*$/i.test(message.body.trim())) {
         const pending = this.db.prepare("SELECT chat_id AS chatId, stanza_id AS stanzaId, product_id AS productId, amount_cents AS amountCents, seen_at AS seenAt FROM bids WHERE chat_id=? AND status='pending_terms' ORDER BY seen_at ASC")
           .all(message.chatId) as Array<{ chatId: string; stanzaId: string; productId: string; amountCents: number; seenAt: number }>;
         if (!pending.length) return { status: 'ignored' };
