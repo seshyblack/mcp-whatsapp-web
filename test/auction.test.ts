@@ -48,7 +48,7 @@ describe('Calmistry auction parsing', () => {
   it('rejects uncertain lot identity and ignores outgoing messages', () => {
     const b = book();
     expect(b.handle(message('out', 'RM 300', { fromMe: true })).status).toBe('ignored');
-    expect(b.handle(message('unknown', 'RM 300')).status).toBe('needs_item');
+    expect(b.handle(message('unknown', 'RM 300')).status).toBe('ignored');
     expect(b.handle(message('native', '', { productId: '28881984484829546', type: 'product' })).status).toBe('selected');
     expect(b.handle(message('bid', 'RM 300', { quotedStanzaId: 'native' })).status).toBe('pending_terms');
     b.close();
