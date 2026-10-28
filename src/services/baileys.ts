@@ -20,13 +20,13 @@ import path from 'node:path';
 import { fileTypeFromBuffer } from 'file-type';
 import { BaileysStore } from './baileys-store.js';
 import type {
-  BackendStatus, MediaData, SentMessage, SimpleChat, SimpleContact, SimpleMessage, WhatsAppBackend,
+  BackendStatus, MediaData, SentMessage, SimpleChat, SimpleContact, SimpleMessage, WhatsAppBackend, WhatsAppChannelInfo,
 } from './backend.js';
 import { log } from '../utils/logger.js';
 
 export type BaileysSocket = Pick<WASocket,
   'ev' | 'end' | 'logout' | 'requestPairingCode' | 'sendMessage' |
-  'fetchMessageHistory' | 'updateMediaMessage' | 'groupMetadata' | 'user'>;
+  'fetchMessageHistory' | 'updateMediaMessage' | 'groupMetadata' | 'newsletterMetadata' | 'user'>;
 
 /** Socket injection keeps tests offline; no browser or live connection is needed. */
 export interface BaileysServiceDeps {
@@ -532,6 +532,49 @@ export class BaileysService implements WhatsAppBackend {
       throw new Error('Invalid WhatsApp JID. Use a returned contact/chat ID, or an international phone number followed by @c.us.');
     }
     return this.requireStore().resolveJid(normalized);
+  }
+
+  /** Metadata lookup only: never follows, edits, or publishes to the channel. */
+  async resolveChannelInvite(inviteUrl: string): Promise<WhatsAppChannelInfo> {
+    let code: string;
+    try {
+      const parsed = new URL(inviteUrl);
+      if (parsed.protocol !== 'https:' || !['whatsapp.com', 'www.whatsapp.com'].includes(parsed.hostname)) {
+        throw new Error('host');
+      }
+      const match = parsed.pathname.match(/^\/channel\/([A-Za-z0-9]{15,40})\/?$/);
+      if (!match) throw new Error('path');
+      code = match[1]!;
+    } catch {
+      throw new Error('Use a full https://whatsapp.com/channel/... invite link.');
+    }
+    await this.ensureReady();
+    const socket = this.socket!;
+    const generation = this.generation;
+    const metadata = await socket.newsletterMetadata('invite', code);
+    if (!metadata || !/^\d+@newsletter$/.test(metadata.id)) {
+      throw new Error('WhatsApp could not resolve this Channel invitation code.');
+    }
+    if (socket !== this.socket || generation !== this.generation) {
+      throw new Error('WhatsApp reconnected during Channel lookup; retry once ready.');
+    }
+    const details = metadata as unknown as {
+      name?: string;
+      subscribers?: number;
+      viewer_metadata?: { role?: string };
+      viewerMetadata?: { role?: string };
+    };
+    const rawRole = details.viewer_metadata?.role ?? details.viewerMetadata?.role;
+    const role = ['OWNER', 'ADMIN', 'SUBSCRIBER', 'GUEST'].includes(String(rawRole))
+      ? rawRole as WhatsAppChannelInfo['viewerRole'] : 'UNKNOWN';
+    return {
+      id: metadata.id,
+      name: details.name || '(unnamed channel)',
+      inviteCode: code,
+      viewerRole: role,
+      ...(typeof details.subscribers === 'number' && Number.isFinite(details.subscribers)
+        ? { subscribers: details.subscribers } : {}),
+    };
   }
 
   async searchContacts(query: string): Promise<SimpleContact[]> {
