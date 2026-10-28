@@ -735,6 +735,27 @@ export class BaileysService implements WhatsAppBackend {
     const senderContact = !fromMe && chatId.endsWith('@g.us') ? this.requireStore().getContact(senderId) : undefined;
     const senderName = senderContact?.name ?? senderContact?.notify ?? messageInfo.pushName ?? null;
     const media = content?.imageMessage ?? content?.videoMessage ?? content?.audioMessage ?? content?.documentMessage ?? content?.stickerMessage;
+    // Reply metadata may accompany text, images, documents or other media messages.
+    // Read only known Baileys contextInfo locations and never infer a quote from adjacency.
+    const context = content?.extendedTextMessage?.contextInfo
+      ?? content?.imageMessage?.contextInfo
+      ?? content?.videoMessage?.contextInfo
+      ?? content?.documentMessage?.contextInfo
+      ?? content?.audioMessage?.contextInfo
+      ?? content?.buttonsResponseMessage?.contextInfo
+      ?? content?.listResponseMessage?.contextInfo;
+    const stanzaId = context?.stanzaId?.trim();
+    const quoted = context?.quotedMessage
+      ? normalizeMessageContent(context.quotedMessage) : undefined;
+    const quotedText = quoted?.conversation ?? quoted?.extendedTextMessage?.text
+      ?? quoted?.imageMessage?.caption ?? quoted?.videoMessage?.caption
+      ?? quoted?.documentMessage?.caption ?? undefined;
+    const quotedMessage = stanzaId ? {
+      stanzaId,
+      chatId,
+      ...(context?.participant ? { participant: this.normalizeJid(context.participant) } : {}),
+      ...(quotedText ? { text: quotedText } : {}),
+    } : undefined;
     const body = content?.conversation ?? content?.extendedTextMessage?.text
       ?? content?.imageMessage?.caption ?? content?.videoMessage?.caption ?? content?.documentMessage?.caption
       ?? content?.contactMessage?.displayName ?? content?.locationMessage?.name ?? '';
@@ -749,6 +770,7 @@ export class BaileysService implements WhatsAppBackend {
       ...(senderParticipant ? { senderParticipant } : {}),
       ...(senderAlt ? { senderAlt } : {}),
       ...(senderName ? { senderName } : {}),
+      ...(quotedMessage ? { quotedMessage } : {}),
     };
   }
 }

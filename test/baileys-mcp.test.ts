@@ -87,6 +87,37 @@ describe('MCP tools with the real Baileys adapter and SQLite (offline)', () => {
     expect(JSON.parse(await call('get_backend_status'))).toMatchObject({ backend: 'baileys', authenticated: true, history: { messageCount: 2 } });
   });
 
+  it('exposes WhatsApp reply metadata through list, direct lookup and context tools', async () => {
+    const { sockets, call } = await fixture();
+    const peer = '15550000002@s.whatsapp.net';
+    sockets[0].ev.emit('messages.upsert', {
+      type: 'notify',
+      messages: [{
+        key: { id: 'bid-reply', remoteJid: peer, fromMe: false },
+        message: { extendedTextMessage: {
+          text: 'RM 200',
+          contextInfo: {
+            stanzaId: 'original-bid',
+            participant: peer,
+            quotedMessage: { extendedTextMessage: { text: 'My bid is RM 180' } },
+          },
+        } },
+        messageTimestamp: 1700000040,
+      }],
+    });
+    const messages = JSON.parse(await call('list_messages', { chat_id: peer, limit: 10 }));
+    const reply = messages.find((item: { body: string }) => item.body === 'RM 200');
+    expect(reply.quotedMessage).toEqual({
+      stanzaId: 'original-bid', chatId: peer, participant: peer, text: 'My bid is RM 180',
+    });
+    expect(JSON.parse(await call('get_message_by_id', { message_id: reply.id })).quotedMessage)
+      .toEqual(reply.quotedMessage);
+    const context = JSON.parse(await call('get_message_context', { message_id: reply.id, limit: 10 }));
+    expect(context.targetMessage.quotedMessage).toEqual(reply.quotedMessage);
+    const original = messages.find((item: { body: string }) => item.body === 'Stored history');
+    expect(original.quotedMessage).toBeUndefined();
+  });
+
   it('explicit MCP logout clears a disconnected account before pairing again', async () => {
     const { service, sockets, call } = await fixture();
     await service.destroy();
