@@ -498,6 +498,15 @@ export class BaileysStore {
     this.auth = undefined;
   }
 
+  /** Remote device unlink invalidates keys, not the owner's locally synchronized history. */
+  clearCredentials(): void {
+    this.transaction(() => {
+      this.db.exec('DELETE FROM credentials; DELETE FROM signal_keys;');
+    });
+    this.invalidateAuthState();
+    this.db.pragma('wal_checkpoint(TRUNCATE)');
+  }
+
   /** Explicit logout erases credentials and all account history; reconnects must use close(). */
   clear(): void {
     this.transaction(() => {

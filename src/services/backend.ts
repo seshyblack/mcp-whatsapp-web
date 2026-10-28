@@ -54,6 +54,8 @@ export interface MediaData {
 export interface BackendStatus {
   backend: 'webjs' | 'baileys';
   authenticated: boolean;
+  /** Human-readable setup error for the owner-only OAuth pairing page. */
+  connectionError?: string;
   history: {
     state: 'unavailable' | 'syncing' | 'available';
     messageCount?: number;

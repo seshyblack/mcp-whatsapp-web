@@ -126,7 +126,7 @@ describe('Baileys lifecycle and authentication (offline)', () => {
     expect(service.getLatestPairingCode()).toBeNull();
   });
 
-  it('invalidates credentials and listeners on remote logout without reconnecting', async () => {
+  it('restarts pairing automatically after a remote unlink without erasing synchronized history', async () => {
     vi.useFakeTimers();
     const { service, socket, configs, sockets } = await connected();
     const invalidated = vi.fn();
@@ -136,11 +136,12 @@ describe('Baileys lifecycle and authentication (offline)', () => {
     close(socket, DisconnectReason.loggedOut);
     expect(service.isAuthenticated()).toBe(false);
     expect(invalidated).toHaveBeenCalledOnce();
-    expect(service.getStatus().history.messageCount).toBe(0);
-    await vi.advanceTimersByTimeAsync(100000);
-    expect(sockets).toHaveLength(1);
-    await service.initialize();
+    expect(service.getStatus().history.messageCount).toBe(1);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(sockets).toHaveLength(2);
     expect(configs[1].auth.creds.registered).toBe(false);
+    sockets[1].ev.emit('connection.update', { qr: 'fresh-qr' });
+    expect(service.getLatestQrCode()).toBe('fresh-qr');
   });
 
   it('clears local credentials and invalidates access even when remote logout fails', async () => {

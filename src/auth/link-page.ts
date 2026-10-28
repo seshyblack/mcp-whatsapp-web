@@ -40,9 +40,11 @@ export function createLinkRouter(
 
     const authenticated = whatsapp.isAuthenticated();
     const qrString = whatsapp.getLatestQrCode();
+    const connectionError = whatsapp.getStatus().connectionError ?? null;
     const pending = provider.getTransaction(txn)!;
     res.json({
       authenticated,
+      connectionError,
       csrf: pending.csrf,
       clientName: pending.client.client_name ?? pending.client.client_id,
       redirectUri: pending.params.redirectUri,
@@ -61,6 +63,23 @@ export function createLinkRouter(
       res.json({ pairingCode: code });
     } catch (error) {
       res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  // Authenticated owner can restart a stuck unauthenticated backend without
+  // deleting its persisted session database or history.
+  router.post('/retry', async (req: Request, res: Response) => {
+    if (req.headers.origin !== origin) { res.status(403).send('Invalid origin.'); return; }
+    if (!validTxn(req, res)) return;
+    try {
+      if (!whatsapp.isAuthenticated()) {
+        await whatsapp.destroy();
+        await whatsapp.initialize();
+      }
+      res.json({ ok: true });
+    } catch (error) {
+      log.warn('Failed to restart WhatsApp pairing:', error);
+      res.status(503).json({ error: 'WhatsApp could not restart pairing. Check the hosting service logs.' });
     }
   });
 
@@ -121,6 +140,10 @@ const LINK_PAGE_HTML = `<!DOCTYPE html>
 <div class="card">
   <h1>Link your WhatsApp account</h1>
   <div id="content"><p>Waiting for QR code&hellip;</p></div>
+  <div id="repair" hidden>
+    <p id="repair-text"></p>
+    <button type="button" id="retry-button">Restart WhatsApp connection</button>
+  </div>
   <details>
     <summary>Use a pairing code instead</summary>
     <p>Enter your WhatsApp phone number in international format (e.g. 4915112345678):</p>
@@ -136,12 +159,36 @@ const LINK_PAGE_HTML = `<!DOCTYPE html>
   const content = document.getElementById('content');
   let pairingActive = false;
 
+  const repair = document.getElementById('repair');
+  const repairText = document.getElementById('repair-text');
+  const retryButton = document.getElementById('retry-button');
+  let firstPollAt = Date.now();
+  let pollFailures = 0;
+  let finished = false;
+
+  function offerRetry(message) {
+    repair.hidden = false;
+    repairText.textContent = message;
+  }
+
   async function poll() {
+    const controller = new AbortController();
+    const abortAfter = setTimeout(() => controller.abort(), 8000);
     try {
-      const res = await fetch('/oauth/link/status?txn=' + encodeURIComponent(txn));
-      if (!res.ok) { content.innerHTML = '<p class="error">This authorization request expired. Retry from your MCP client.</p>'; return; }
+      const res = await fetch('/oauth/link/status?txn=' + encodeURIComponent(txn), {
+        signal: controller.signal, cache: 'no-store',
+      });
+      if (res.status === 400) {
+        content.textContent = 'This authorization request expired. Retry from your MCP client.';
+        finished = true;
+        return;
+      }
+      if (!res.ok) throw new Error('Status endpoint unavailable');
+      pollFailures = 0;
       const s = await res.json();
       if (s.authenticated) {
+        finished = true;
+        repair.hidden = true;
         content.replaceChildren();
         const summary = document.createElement('p');
         summary.textContent = 'Authorize ' + s.clientName + ' to access your WhatsApp MCP? Return address: ' + s.redirectUri;
@@ -160,16 +207,61 @@ const LINK_PAGE_HTML = `<!DOCTYPE html>
         return;
       }
       if (s.pairingCode) {
-        content.innerHTML = '<p>Enter this code on your phone (Settings &gt; Linked Devices &gt; Link a device &gt; &quot;Link with phone number instead&quot;):</p>'
-          + '<div id="pairing-code">' + s.pairingCode + '</div>';
+        content.textContent = 'Enter this pairing code on your phone (WhatsApp > Linked Devices > Link a device > Link with phone number instead):';
+        const code = document.createElement('div');
+        code.id = 'pairing-code';
+        code.textContent = s.pairingCode;
+        content.append(code);
+        repair.hidden = true;
       } else if (s.qrDataUrl && !pairingActive) {
-        content.innerHTML = '<p>Scan with WhatsApp on your phone (Settings &gt; Linked Devices &gt; Link a device):</p>'
-          + '<div id="qr"><img alt="WhatsApp QR code" src="' + s.qrDataUrl + '"></div>';
+        content.textContent = 'Scan this QR code from WhatsApp > Linked Devices > Link a device:';
+        const wrapper = document.createElement('div');
+        wrapper.id = 'qr';
+        const img = document.createElement('img');
+        img.alt = 'WhatsApp QR code';
+        img.src = s.qrDataUrl;
+        wrapper.append(img);
+        content.append(wrapper);
+        repair.hidden = true;
+      } else if (s.connectionError) {
+        content.textContent = 'WhatsApp could not start pairing.';
+        offerRetry(s.connectionError);
+      } else if (Date.now() - firstPollAt >= 12000) {
+        content.textContent = 'No QR code has arrived. Request a phone-number code below or restart the connection.';
+        offerRetry('The WhatsApp service has not yet received a login challenge.');
       }
-    } catch (e) { /* transient network error; keep polling */ }
-    setTimeout(poll, 2000);
+    } catch (error) {
+      if (++pollFailures >= 2) {
+        content.textContent = 'Unable to reach the WhatsApp login service.';
+        offerRetry('The server is not responding reliably. Try restarting the WhatsApp connection.');
+      }
+    } finally {
+      clearTimeout(abortAfter);
+      if (!finished) setTimeout(poll, 2000);
+    }
   }
   poll();
+
+  retryButton.addEventListener('click', async () => {
+    retryButton.disabled = true;
+    repairText.textContent = 'Restarting WhatsApp connection…';
+    try {
+      const res = await fetch('/oauth/link/retry', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ txn }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Restart failed.');
+      }
+      firstPollAt = Date.now();
+      repairText.textContent = 'Restarted. A QR code or phone-number pairing code should appear shortly.';
+    } catch (error) {
+      repairText.textContent = error instanceof Error ? error.message : 'Restart failed.';
+    } finally {
+      retryButton.disabled = false;
+    }
+  });
 
   document.getElementById('pair-form').addEventListener('submit', async (ev) => {
     ev.preventDefault();
@@ -182,7 +274,7 @@ const LINK_PAGE_HTML = `<!DOCTYPE html>
         body: JSON.stringify({ txn, phone_number: document.getElementById('phone').value }),
       });
       const data = await res.json();
-      if (res.ok) { pairingActive = true; out.textContent = ''; }
+      if (res.ok) { pairingActive = true; out.textContent = 'Pairing code: ' + data.pairingCode + '. Enter it on WhatsApp under Linked Devices.'; }
       else { out.textContent = data.error || 'Failed to request pairing code.'; out.className = 'error'; }
     } catch (e) { out.textContent = 'Failed to request pairing code.'; out.className = 'error'; }
   });

@@ -137,6 +137,20 @@ describe('BaileysStore auth persistence', () => {
     expect(await next.state.keys.get('session', ['remote'])).toEqual({});
   });
 
+  it('removes invalid credentials but retains local chat history for pairing again', async () => {
+    const store = open();
+    const old = await store.createAuthState();
+    await old.saveCreds({ registered: true });
+    await old.state.keys.set({ session: { remote: Buffer.from([1]) } });
+    store.upsertMessages([message('retained', 100)]);
+    store.clearCredentials();
+    await expect(old.saveCreds()).rejects.toThrow(/invalidated/);
+    const next = await store.createAuthState();
+    expect(next.state.creds.registered).toBe(false);
+    expect(await next.state.keys.get('session', ['remote'])).toEqual({});
+    expect(store.getMessages(peer)).toHaveLength(1);
+  });
+
   it('reloads a fresh auth snapshot on socket replacement and rejects the previous socket\'s late key writes', async () => {
     const store = open();
     const old = await store.createAuthState();

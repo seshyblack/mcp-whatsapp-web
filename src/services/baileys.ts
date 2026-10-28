@@ -244,7 +244,7 @@ export class BaileysService implements WhatsAppBackend {
         const error = update.lastDisconnect?.error;
         const code = (error as { output?: { statusCode?: number } } | undefined)?.output?.statusCode;
         if (code === DisconnectReason.loggedOut || code === DisconnectReason.badSession || code === DisconnectReason.forbidden) {
-          this.invalidateSession(`WhatsApp session was invalidated (${code}). Pair this backend again.`);
+          this.invalidateSession(`WhatsApp session was invalidated (${code}). Pair this backend again.`, code !== DisconnectReason.forbidden);
         } else if (code === DisconnectReason.connectionReplaced || code === DisconnectReason.multideviceMismatch) {
           this.stopped = true;
           this.terminalError = new Error(`WhatsApp connection stopped (${code}). Resolve the linked-device conflict, then restart the server.`);
@@ -312,19 +312,35 @@ export class BaileysService implements WhatsAppBackend {
     this.closeSocket();
   }
 
-  private invalidateSession(reason: string): void {
+  private invalidateSession(reason: string, restartPairing = false): void {
     this.stopped = true;
     this.terminalError = new Error(reason);
     this.cancelReconnect();
     this.closeSocket();
-    try { this.store?.clear(); }
-    catch (error) {
-      log.error('Could not clear invalid Baileys credentials:', error);
-      this.terminalError = new Error(`${reason} Local credentials could not be cleared; check the session directory before restarting.`);
+    let credentialsCleared = false;
+    try {
+      this.store?.clearCredentials();
+      credentialsCleared = true;
+    } catch (error) {
+      log.error('Could not reset invalid Baileys credentials:', error);
+      this.terminalError = new Error(`${reason} Local credentials could not be reset; check the session directory before restarting.`);
     } finally {
       this.historyRequests.clear();
       this.historyInflight.clear();
       this.notifySessionInvalidated();
+    }
+    // Unlinking the device must not leave the OAuth page waiting forever for a QR.
+    // The next socket has fresh credentials; synchronized chat history remains intact.
+    if (credentialsCleared && restartPairing) {
+      const expectedIntent = this.intent;
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = undefined;
+        if (!this.stopped || this.intent !== expectedIntent) return;
+        void this.initialize().catch(error =>
+          log.error('Could not restart WhatsApp pairing after remote unlink:', error),
+        );
+      }, 500);
+      this.reconnectTimer.unref?.();
     }
   }
 
@@ -432,7 +448,7 @@ export class BaileysService implements WhatsAppBackend {
     const number = phoneNumber.replace(/\D/g, '');
     if (!/^\d{6,15}$/.test(number)) throw new Error('Provide a phone number with 6–15 digits including the country code.');
     if (this.ready) throw new Error('Client is already authenticated; no pairing code needed.');
-    if (!this.socket || !this.latestQr || this.stopped) throw new Error('WhatsApp is not at the pairing stage yet. Wait for a QR code and try again.');
+    if (!this.socket || this.stopped) throw new Error('WhatsApp connection is unavailable. Restart the connection and request a pairing code again.');
     if (this.pairingPromise) return this.pairingPromise;
     const generation = this.generation;
     const pending = timeout(this.socket.requestPairingCode(number), 15_000, 'Pairing code request').then(code => {
@@ -466,6 +482,7 @@ export class BaileysService implements WhatsAppBackend {
     return {
       backend: this.backend,
       authenticated: this.ready,
+      connectionError: this.terminalError?.message,
       history: {
         state: this.historySyncing && this.ready ? 'syncing' : lastSyncAt || hasData ? 'available' : 'unavailable',
         ...counts,

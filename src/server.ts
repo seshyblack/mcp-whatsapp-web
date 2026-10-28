@@ -181,6 +181,8 @@ export class WhatsAppMcpServer {
   private async startHttpTransport(port: number) {
     log.info(`Starting MCP server with Streamable HTTP transport on port ${port}...`);
     const app = express();
+    // One trusted Render edge proxy; keep express-rate-limit from rejecting its forwarded IP header.
+    app.set('trust proxy', 1);
     app.use(express.json({ limit: '10mb' }));
 
     // Bind to localhost only by default: the endpoint exposes a personal
