@@ -105,6 +105,13 @@ export class AuctionSweepMonitor {
       if(at<START||at>=END) verdict='closed';
       else if(!opening||!b.consent||b.amount<opening||(b.amount-opening)%50!==0) verdict='invalid';
       else{
+        const own=this.db.prepare("SELECT MAX(amount) AS amount FROM monitored_bids WHERE lot=? AND chat_id=? AND mode='live' AND verdict IN ('accepted','registered_not_leading')")
+          .get(b.lot,m.chatId) as { amount:number|null };
+        if(own.amount!==null && b.amount<=own.amount) {
+          this.db.prepare('INSERT INTO monitored_bids(message_id,chat_id,lot,amount,received_at,mode,verdict) VALUES (?,?,?,?,?,?,?)')
+            .run(m.id,m.chatId,b.lot,b.amount,at,this.mode,'duplicate_or_lower');
+          return true;
+        }
         const previous=this.db.prepare("SELECT chat_id AS chatId,amount FROM monitored_bids WHERE lot=? AND mode='live' AND verdict='accepted' ORDER BY amount DESC,received_at ASC LIMIT 1")
           .get(b.lot) as Prior|undefined;
         verdict=previous && b.amount<=previous.amount ? 'registered_not_leading' : 'accepted';
