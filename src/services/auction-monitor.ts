@@ -94,8 +94,9 @@ export class AuctionSweepMonitor {
   }
   private record(m:SimpleMessage):boolean {
     if(this.stopped || m.fromMe || m.type!=='chat' || !/^\d+@(s\.whatsapp\.net|lid)$/.test(m.chatId||'')) return false;
-    const b=parseAuctionForm(m.body);
+    const b=parseAuctionForm(m.body) ?? parseAuctionFollowUp(m.body);
     if(!b || !m.id || !Number.isFinite(m.timestamp)) return false;
+    if(b.followUp && !this.db.prepare('SELECT 1 FROM auction_bidders WHERE chat_id=?').get(m.chatId)) return false;
     if(this.db.prepare('SELECT 1 FROM monitored_bids WHERE message_id=?').get(m.id)) return false;
     const at=m.timestamp*1000;
     const opening=OPENINGS[b.lot];
