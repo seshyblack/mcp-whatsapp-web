@@ -136,6 +136,7 @@ export class AuctionSweepMonitor {
           }catch(e){partial=true;log.warn('Auction chat could not be scanned',e);}
         }));
       }
+      await this.bidders.flush();
       this.setState('last_check_ms',String(Date.now()));
       this.setState('coverage',partial?'partial':'complete');
       if(!partial) this.setState('last_success_ms',String(now));
@@ -156,8 +157,9 @@ export class AuctionSweepMonitor {
       breakdown:this.db.prepare('SELECT verdict,COUNT(*) AS count FROM monitored_bids GROUP BY verdict').all(),
       leading:this.db.prepare("SELECT lot,MAX(amount) AS amountSgd FROM monitored_bids WHERE mode='live' AND verdict='accepted' GROUP BY lot ORDER BY lot").all(),
       outbidDrafts:(this.db.prepare("SELECT COUNT(*) AS n FROM outbid_drafts WHERE status='draft'").get() as {n:number}).n,
-      lastError:this.error||null, messagesSent:0, websiteUpdates:0,
-      note:'Preview is isolated from live bids. Multiple-quantity lots are held for review. Outbound disabled.'
+      bidders:this.bidders.status(),
+      lastError:this.error||null, messagesSent:this.bidders.status().messagesSent, websiteUpdates:0,
+      note:'Preview is isolated from live bids. Private bidder numbers and notices are created only for valid live bids; outbound requires a separate switch. No public updates.'
     };
   }
 }
