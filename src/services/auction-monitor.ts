@@ -105,7 +105,7 @@ export class AuctionSweepMonitor {
           if(verdict==='accepted' && previous && previous.chatId!==m.chatId){
             this.db.prepare("INSERT OR IGNORE INTO outbid_drafts(lot,chat_id,replaced_by) VALUES (?,?,?)").run(b.lot,previous.chatId,m.id);
           }
-          this.bidders.registerBid({ messageId:m.id, chatId:m.chatId, lot:b.lot,
+          this.bidders.registerBid({ messageId:m.id, chatId:m.chatId!, lot:b.lot,
             amount:b.amount, at, verdict:verdict==='accepted'?'accepted':'too_low', previous });
         })();
         return true;
