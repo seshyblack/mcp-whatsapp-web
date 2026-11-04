@@ -62,19 +62,20 @@ export class AuctionSweepMonitor {
   }
   start(): void {
     if (this.whatsapp.onIncomingMessage) this.unsubscribe = this.whatsapp.onIncomingMessage((m) => {
-      try { this.record(m); } catch (e) { log.error('Auction monitoring intake failed:',e); }
+      try { if (this.record(m)) void this.bidders.flush(); } catch (e) { log.error('Auction monitoring intake failed:',e); }
     });
-    this.timer = setInterval(()=>{void this.sweep();},TWO_MINUTES);
+    this.timer = setInterval(()=>{void this.sweep();void this.bidders.flush();},TWO_MINUTES);
     this.timer.unref?.();
     this.starter = setTimeout(()=>{void this.sweep();},12_000);
     this.starter.unref?.();
-    log.info('Calmistry two-minute auction monitor scheduled. Mode='+this.mode+', outbound=disabled');
+    log.info('Calmistry two-minute auction monitor scheduled. Mode='+this.mode+', outbound='+ (this.mode==='live'&&this.notificationsEnabled));
   }
   stop(): void {
     this.stopped=true;
     if(this.timer) clearInterval(this.timer);
     if(this.starter) clearTimeout(this.starter);
     this.unsubscribe?.();
+    this.bidders.stop();
     this.db.close();
   }
   private state(k:string):string|undefined {
