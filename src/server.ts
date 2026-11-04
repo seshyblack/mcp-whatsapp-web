@@ -96,7 +96,8 @@ export class WhatsAppMcpServer {
       const db = path.resolve(process.env.AUCTION_MONITOR_DB_PATH || path.join(
         process.env.BAILEYS_SESSION_DIR || process.cwd(), 'calmistry-auction-monitor.sqlite'));
       const mode = process.env.AUCTION_MONITOR_MODE === 'live' ? 'live' : 'preview';
-      this.auctionMonitor = new AuctionSweepMonitor(this.whatsapp, db, mode);
+      this.auctionMonitor = new AuctionSweepMonitor(this.whatsapp, db, mode,
+        process.env.AUCTION_NOTICES_ENABLED === 'true');
       this.auctionMonitor.start();
     }
     if (this.whatsapp.backend === 'webjs') {
