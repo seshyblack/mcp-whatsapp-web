@@ -26,8 +26,9 @@ export function parseAuctionForm(body: string): ParsedBid | null {
   if (!lot || !bid) return { lot: '', amount: 0, consent: false };
   const amount = Number(bid[1]!.replace(/,/g,''));
   const repeat = Number(bid[2]!.replace(/,/g,''));
-  const consent = /^Auction rules:\s*read and agreed\b/mi.test(body) &&
+  const consent = /^(?:Auction rules|Bidding terms):\s*read and agreed\b/mi.test(body) &&
     /^Data consent:\s*agreed\b/mi.test(body) &&
+    /^Payment and collection deadlines:\s*understood and agreed\b/mi.test(body) &&
     /^Full name:\s*\S+/mi.test(body) && /^WhatsApp:\s*\+/mi.test(body) &&
     /^Delivery address:\s*\r?\n\S+/mi.test(body);
   return {lot:lot[1]!,amount:Number.isSafeInteger(amount) && amount===repeat ? amount : 0,consent};
