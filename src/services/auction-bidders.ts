@@ -40,8 +40,11 @@ export class AuctionBidderRegistry {
   }
 
   private number(chatId: string, at: number): string {
-    this.db.prepare('INSERT OR IGNORE INTO auction_bidders(chat_id,first_bid_at) VALUES (?,?)').run(chatId, at);
-    const row = this.db.prepare('SELECT id FROM auction_bidders WHERE chat_id=?').get(chatId) as {id:number};
+    const query = this.db.prepare('SELECT id FROM auction_bidders WHERE chat_id=?');
+    const existing = query.get(chatId) as {id:number}|undefined;
+    if(existing) return bidderLabel(existing.id);
+    this.db.prepare('INSERT INTO auction_bidders(chat_id,first_bid_at) VALUES (?,?)').run(chatId, at);
+    const row = query.get(chatId) as {id:number};
     return bidderLabel(row.id);
   }
 
