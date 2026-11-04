@@ -98,9 +98,16 @@ export class AuctionSweepMonitor {
         const previous=this.db.prepare("SELECT chat_id AS chatId,amount FROM monitored_bids WHERE lot=? AND mode='live' AND verdict='accepted' ORDER BY amount DESC,received_at ASC LIMIT 1")
           .get(b.lot) as Prior|undefined;
         verdict=previous && b.amount<=previous.amount ? 'registered_not_leading' : 'accepted';
-        if(verdict==='accepted' && previous && previous.chatId!==m.chatId){
-          this.db.prepare("INSERT OR IGNORE INTO outbid_drafts(lot,chat_id,replaced_by) VALUES (?,?,?)").run(b.lot,previous.chatId,m.id);
-        }
+        this.db.transaction(() => {
+          this.db.prepare('INSERT INTO monitored_bids(message_id,chat_id,lot,amount,received_at,mode,verdict) VALUES (?,?,?,?,?,?,?)')
+            .run(m.id,m.chatId,b.lot,b.amount,at,this.mode,verdict);
+          if(verdict==='accepted' && previous && previous.chatId!==m.chatId){
+            this.db.prepare("INSERT OR IGNORE INTO outbid_drafts(lot,chat_id,replaced_by) VALUES (?,?,?)").run(b.lot,previous.chatId,m.id);
+          }
+          this.bidders.registerBid({ messageId:m.id, chatId:m.chatId, lot:b.lot,
+            amount:b.amount, at, verdict:verdict==='accepted'?'accepted':'too_low', previous });
+        })();
+        return true;
       }
     }
     this.db.prepare('INSERT INTO monitored_bids(message_id,chat_id,lot,amount,received_at,mode,verdict) VALUES (?,?,?,?,?,?,?)')
