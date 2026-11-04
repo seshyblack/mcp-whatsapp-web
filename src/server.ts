@@ -27,6 +27,7 @@ import { registerCampaignTools } from './tools/campaigns.js';
 import { registerCatalogTools } from './tools/catalog.js';
 import { registerAuctionTools } from './tools/auction.js';
 import { AuctionCoordinator } from './services/auction-coordinator.js';
+import { AuctionSweepMonitor } from './services/auction-monitor.js';
 import { ownerGuard } from './auth/owner.js';
 import { campaignRouter } from './auth/campaign-page.js';
 
@@ -48,6 +49,7 @@ export class WhatsAppMcpServer {
   private shutdownPromise?: Promise<void>;
   private campaigns!: CampaignStore;
   private auction?: AuctionCoordinator;
+  private auctionMonitor?: AuctionSweepMonitor;
 
   constructor(whatsapp?: WhatsAppBackend) {
     if (whatsapp) this.whatsapp = whatsapp;
@@ -74,6 +76,9 @@ export class WhatsAppMcpServer {
     registerCampaignTools(server, this.whatsapp, this.campaigns, process.env.MCP_PUBLIC_URL);
     registerCatalogTools(server);
     if (this.auction) registerAuctionTools(server, this.auction);
+    if (this.auctionMonitor) server.tool('auction_monitor_status', async () => ({
+      content: [{ type: 'text', text: JSON.stringify(this.auctionMonitor!.status()) }],
+    }));
 
     server.tool('ping', async () => ({
       content: [{ type: 'text', text: 'pong' }],
@@ -95,6 +100,13 @@ export class WhatsAppMcpServer {
     if (process.env.AUCTION_DB_PATH) {
       this.auction = new AuctionCoordinator(this.whatsapp);
       this.auction.start();
+    }
+    if (process.env.AUCTION_MONITOR_ENABLED === 'true') {
+      const db = path.resolve(process.env.AUCTION_MONITOR_DB_PATH || path.join(
+        process.env.BAILEYS_SESSION_DIR || process.cwd(), 'calmistry-auction-monitor.sqlite'));
+      const mode = process.env.AUCTION_MONITOR_MODE === 'live' ? 'live' : 'preview';
+      this.auctionMonitor = new AuctionSweepMonitor(this.whatsapp, db, mode);
+      this.auctionMonitor.start();
     }
     if (this.whatsapp.backend === 'webjs') {
       this.browserProcessManager = new BrowserProcessManager();
@@ -335,6 +347,8 @@ export class WhatsAppMcpServer {
       // Close the active driver and flush its persistent session state.
       this.auction?.stop();
       this.auction = undefined;
+      this.auctionMonitor?.stop();
+      this.auctionMonitor = undefined;
       await this.whatsapp?.destroy();
     } finally {
       await this.closeTransports();
