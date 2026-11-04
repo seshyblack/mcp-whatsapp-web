@@ -37,6 +37,7 @@ export function parseAuctionForm(body: string): ParsedBid | null {
    No WhatsApp sends and no website writes are possible in this class. */
 export class AuctionSweepMonitor {
   private db: Database.Database;
+  private bidders: AuctionBidderRegistry;
   private timer?: NodeJS.Timeout;
   private starter?: NodeJS.Timeout;
   private unsubscribe?: () => void;
@@ -44,7 +45,8 @@ export class AuctionSweepMonitor {
   private stopped = false;
   private error = '';
   constructor(private readonly whatsapp: WhatsAppBackend, dbPath: string,
-    private readonly mode: Mode = 'preview') {
+    private readonly mode: Mode = 'preview',
+    private readonly notificationsEnabled = false) {
     mkdirSync(path.dirname(dbPath),{recursive:true,mode:0o700});
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
@@ -55,6 +57,8 @@ export class AuctionSweepMonitor {
       "CREATE TABLE IF NOT EXISTS monitor_state (key TEXT PRIMARY KEY,value TEXT NOT NULL)",
       "CREATE TABLE IF NOT EXISTS outbid_drafts (id INTEGER PRIMARY KEY AUTOINCREMENT,lot TEXT NOT NULL,chat_id TEXT NOT NULL,replaced_by TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'draft',UNIQUE(lot,chat_id,replaced_by))"
     ].join(';')+';');
+    this.bidders = new AuctionBidderRegistry(this.db, this.whatsapp,
+      this.mode === 'live' && this.notificationsEnabled);
   }
   start(): void {
     if (this.whatsapp.onIncomingMessage) this.unsubscribe = this.whatsapp.onIncomingMessage((m) => {
