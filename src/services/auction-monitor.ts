@@ -16,7 +16,7 @@ const OPENINGS: Readonly<Record<string, number>> = {
   '29':100,'30':70,'31':170,'32':90,'33':210,
 };
 type Mode = 'preview' | 'live';
-interface ParsedBid { lot: string; amount: number; consent: boolean; }
+interface ParsedBid { lot: string; amount: number; consent: boolean; followUp?: boolean; }
 interface Prior { chatId: string; amount: number; }
 export function parseAuctionForm(body: string): ParsedBid | null {
   if (!/^CALMISTRY\s*[—-]\s*PRIVATE COLLECTION AUCTION\s*$/mi.test(body)) return null;
@@ -31,6 +31,14 @@ export function parseAuctionForm(body: string): ParsedBid | null {
     /^Full name:\s*\S+/mi.test(body) && /^WhatsApp:\s*\+/mi.test(body) &&
     /^Delivery address:\s*\r?\n\S+/mi.test(body);
   return {lot:lot[1]!,amount:Number.isSafeInteger(amount) && amount===repeat ? amount : 0,consent};
+}
+
+/** Optional short follow-up format for already registered bidders only. */
+export function parseAuctionFollowUp(body: string): ParsedBid | null {
+  const match = body.trim().match(/^Bid\s+Lot\s+(0[1-9]|[12][0-9]|3[0-3])\s*:\s*S\$\s*([1-9][0-9]{0,8})$/i);
+  if (!match) return null;
+  const amount = Number(match[2]);
+  return { lot:match[1]!, amount, consent:Number.isSafeInteger(amount), followUp:true };
 }
 
 /* Runs outside ChatGPT, on the existing Render WhatsApp server.
