@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import type { SimpleMessage, WhatsAppBackend } from './backend.js';
 import { log } from '../utils/logger.js';
+import { AuctionBidderRegistry } from './auction-bidders.js';
 
 const TWO_MINUTES = 120_000;
 const START = Date.parse('2026-11-08T10:00:00+08:00');
