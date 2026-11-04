@@ -15,7 +15,6 @@ const OPENINGS: Readonly<Record<string, number>> = {
   '22':90,'23':80,'24':70,'25':160,'26':80,'27':50,'28':120,
   '29':100,'30':70,'31':170,'32':90,'33':210,
 };
-const MULTI = new Set(['05','06','08','17','30','32']);
 type Mode = 'preview' | 'live';
 interface ParsedBid { lot: string; amount: number; consent: boolean; }
 interface Prior { chatId: string; amount: number; }
@@ -95,11 +94,10 @@ export class AuctionSweepMonitor {
     if(this.mode==='live'){
       if(at<START||at>=END) verdict='closed';
       else if(!opening||!b.consent||b.amount<opening||(b.amount-opening)%50!==0) verdict='invalid';
-      else if(MULTI.has(b.lot)) verdict='needs_review';
       else{
         const previous=this.db.prepare("SELECT chat_id AS chatId,amount FROM monitored_bids WHERE lot=? AND mode='live' AND verdict='accepted' ORDER BY amount DESC,received_at ASC LIMIT 1")
           .get(b.lot) as Prior|undefined;
-        verdict=previous && b.amount<=previous.amount ? 'too_low' : 'accepted';
+        verdict=previous && b.amount<=previous.amount ? 'registered_not_leading' : 'accepted';
         if(verdict==='accepted' && previous && previous.chatId!==m.chatId){
           this.db.prepare("INSERT OR IGNORE INTO outbid_drafts(lot,chat_id,replaced_by) VALUES (?,?,?)").run(b.lot,previous.chatId,m.id);
         }
