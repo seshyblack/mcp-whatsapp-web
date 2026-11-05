@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { SimpleMessage, WhatsAppBackend } from './backend.js';
 import { log } from '../utils/logger.js';
 import { AuctionBidderRegistry } from './auction-bidders.js';
+import { validAuctionBidAmount } from './auction-pricing.js';
 import { AuctionTestSandbox } from './auction-test-sandbox.js';
 
 const TWO_MINUTES = 120_000;
@@ -110,7 +111,7 @@ export class AuctionSweepMonitor {
     let verdict='preview';
     if(this.mode==='live'){
       if(at<START||at>=END) verdict='closed';
-      else if(!opening||!b.consent||b.amount<opening||(b.amount-opening)%50!==0) verdict='invalid';
+      else if(!b.consent||!validAuctionBidAmount(opening,b.amount)) verdict='invalid';
       else{
         const own=this.db.prepare("SELECT MAX(amount) AS amount FROM monitored_bids WHERE lot=? AND chat_id=? AND mode='live' AND verdict IN ('accepted','registered_not_leading')")
           .get(b.lot,m.chatId) as { amount:number|null };
