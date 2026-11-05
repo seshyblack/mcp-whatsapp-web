@@ -75,9 +75,9 @@ export class AuctionSweepMonitor {
   }
   start(): void {
     if (this.whatsapp.onIncomingMessage) this.unsubscribe = this.whatsapp.onIncomingMessage((m) => {
-      try { if (this.record(m)) void this.bidders.flush(); } catch (e) { log.error('Auction monitoring intake failed:',e); }
+      try { if(this.record(m)){ void this.bidders.flush(); void this.tests.flush(); } } catch(e){log.error('Auction monitoring intake failed:',e);}
     });
-    this.timer = setInterval(()=>{void this.sweep();void this.bidders.flush();},TWO_MINUTES);
+    this.timer = setInterval(()=>{void this.sweep();void this.bidders.flush();void this.tests.flush();},TWO_MINUTES);
     this.timer.unref?.();
     this.starter = setTimeout(()=>{void this.sweep();},12_000);
     this.starter.unref?.();
@@ -89,6 +89,7 @@ export class AuctionSweepMonitor {
     if(this.starter) clearTimeout(this.starter);
     this.unsubscribe?.();
     this.bidders.stop();
+    this.tests.stop();
     this.db.close();
   }
   private state(k:string):string|undefined {
