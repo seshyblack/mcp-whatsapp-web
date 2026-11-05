@@ -47,6 +47,7 @@ export function parseAuctionFollowUp(body: string): ParsedBid | null {
 export class AuctionSweepMonitor {
   private db: Database.Database;
   private bidders: AuctionBidderRegistry;
+  private tests: AuctionTestSandbox;
   private timer?: NodeJS.Timeout;
   private starter?: NodeJS.Timeout;
   private unsubscribe?: () => void;
@@ -55,7 +56,8 @@ export class AuctionSweepMonitor {
   private error = '';
   constructor(private readonly whatsapp: WhatsAppBackend, dbPath: string,
     private readonly mode: Mode = 'preview',
-    private readonly notificationsEnabled = false) {
+    private readonly notificationsEnabled = false,
+    private readonly testRepliesEnabled = false) {
     mkdirSync(path.dirname(dbPath),{recursive:true,mode:0o700});
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
@@ -68,6 +70,8 @@ export class AuctionSweepMonitor {
     ].join(';')+';');
     this.bidders = new AuctionBidderRegistry(this.db, this.whatsapp,
       this.mode === 'live' && this.notificationsEnabled);
+    this.tests = new AuctionTestSandbox(this.db,this.whatsapp,
+      this.mode === 'preview' && this.testRepliesEnabled);
   }
   start(): void {
     if (this.whatsapp.onIncomingMessage) this.unsubscribe = this.whatsapp.onIncomingMessage((m) => {
