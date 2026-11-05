@@ -61,28 +61,32 @@ export class AuctionBidderRegistry {
     const number = this.number(chatId, at);
     const previousNumber = previous ? this.number(previous.chatId, at) : undefined;
     const leading = verdict === 'accepted';
-    const currentLeader = leading ? number : previousNumber;
     const text = [
-      'CALMISTRY | PRIVATE COLLECTION',
-      'Bid registered and confirmed.',
-      'Your bidder number: ' + number,
-      'Lot: ' + lot,
-      'Your bid: ' + sgd(amount),
-      leading ? 'Status: You are currently the highest bidder.'
-        : 'Status: You are not currently the highest bidder.',
-      currentLeader ? 'Current highest bidder: ' + currentLeader : '',
-      'Bidder identities remain private. Being highest now does not guarantee a win.',
-      'We will contact you on WhatsApp if your bidding status changes.',
-    ].filter(Boolean).join('\n');
+      'CALMISTRY — PRIVATE COLLECTION',
+      '',
+      leading
+        ? '*You are currently the highest bidder for Lot ' + lot + '.*'
+        : '*You are not currently the highest bidder for Lot ' + lot + '.*',
+      '',
+      'Your offer of ' + sgd(amount) + ' has been recorded.',
+      'Your bidder number · ' + number,
+      '',
+      leading
+        ? 'We will notify you privately if you are outbid.'
+        : 'You are welcome to submit a further offer in the same WhatsApp chat.',
+      'The winning bid is confirmed after the auction closes.',
+    ].join('\n');
     this.queue('confirmation', chatId, messageId, text, at);
 
     if (leading && previous && previous.chatId !== chatId && previousNumber) {
       const outbidText = [
-        'CALMISTRY | PRIVATE COLLECTION',
-        'You have been outbid on Lot ' + lot + '.',
-        'Your bidder number: ' + previousNumber,
-        'Current highest bidder: ' + number,
-        'You may place another bid in this WhatsApp chat.',
+        'CALMISTRY — PRIVATE COLLECTION',
+        '',
+        '*You have been outbid on Lot ' + lot + '.*',
+        '',
+        'Your bidder number · ' + previousNumber,
+        '',
+        'If you wish to place a further offer, you may do so in this WhatsApp chat.',
       ].join('\n');
       this.queue('outbid', previous.chatId, messageId, outbidText, at);
     }
