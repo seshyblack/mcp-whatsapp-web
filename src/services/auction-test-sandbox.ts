@@ -91,7 +91,6 @@ export class AuctionTestSandbox {
       const leading=!previous || parsed.amount>previous.amount;
       const bidder=this.bidderNumber(chatId);
       const previousBidder=previous?this.bidderNumber(previous.chatId):undefined;
-      const leader=leading?bidder:previousBidder;
       this.db.prepare('INSERT INTO auction_test_bids(message_id,chat_id,lot,amount,received_at_ms,verdict) VALUES (?,?,?,?,?,?)')
         .run(message.id,chatId,parsed.lot,parsed.amount,at,leading?'leading':'not_leading');
       const text=[
@@ -102,7 +101,6 @@ export class AuctionTestSandbox {
         'Lot: '+parsed.lot,
         'Your test bid: '+price(parsed.amount),
         'Status: '+(leading?'You are currently the highest TEST bidder.':'You are not currently the highest TEST bidder.'),
-        leader?'Current highest TEST bidder: '+leader:'',
         '',
         'This is a private simulation. Bidder names are not disclosed.',
       ].filter((line,i,a)=>line!=='' || (i>0&&a[i-1]!=='')).join('\n');
@@ -112,7 +110,6 @@ export class AuctionTestSandbox {
           'CALMISTRY — TEST AUCTION',
           'You have been outbid in the TEST auction on Lot '+parsed.lot+'.',
           'Your test bidder number: '+previousBidder,
-          'Current highest TEST bidder: '+bidder,
           '',
           'No real auction result has changed.',
         ].join('\n'),at);
