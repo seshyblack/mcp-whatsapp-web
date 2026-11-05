@@ -56,10 +56,10 @@ test('sandbox assigns stable private IDs, replies leading/nonleading and outbid 
     expect(pending).toHaveLength(5);
     expect(pending.every(x=>x.state==='pending')).toBe(true);
     expect(pending.filter(x=>x.kind==='outbid')).toHaveLength(1);
-    expect(pending.some(x=>x.text.includes('Your test bidder number: B001'))).toBe(true);
-    expect(pending.some(x=>x.text.includes('Your test bidder number: B002'))).toBe(true);
-    expect(pending.some(x=>x.text.includes('highest TEST bidder: B002'))).toBe(true);
-    expect(pending.some(x=>x.text.includes('You are not currently the highest TEST bidder.'))).toBe(true);
+    expect(pending.some(x=>x.text.includes('Your bidder number · B001'))).toBe(true);
+    expect(pending.some(x=>x.text.includes('Your bidder number · B002'))).toBe(true);
+    expect(pending.every(x=>!x.text.includes('Current highest'))).toBe(true);
+    expect(pending.some(x=>x.text.includes('You are not currently the highest bidder for Lot 02.'))).toBe(true);
     expect(pending.every(x=>x.text.includes('TEST'))).toBe(true);
     expect(sandbox.record(inbound('normal',first,draft('02',970).replace(TEST_BID_HEADER,'CALMISTRY — PRIVATE COLLECTION AUCTION')),parseAuctionForm,openings)).toBe(false);
     expect(sandbox.record(inbound('malformed',first,draft('02',970).replace('Data consent: agreed.', 'Data consent: denied.')),parseAuctionForm,openings)).toBe(false);
