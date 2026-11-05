@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import type { SimpleMessage, WhatsAppBackend } from './backend.js';
+import { validAuctionBidAmount } from './auction-pricing.js';
 import { log } from '../utils/logger.js';
 
 export const TEST_BID_HEADER = 'CALMISTRY AUCTION — TEST MESSAGE (NOT A BID)';
@@ -73,7 +74,7 @@ export class AuctionTestSandbox {
     const parsed=parseLive([REAL_BID_HEADER,...lines.slice(1)].join('\n'));
     if (!parsed || !parsed.consent) return false;
     const opening=openings[parsed.lot];
-    if(!opening || parsed.amount<opening || (parsed.amount-opening)%50!==0) return false;
+    if(!validAuctionBidAmount(opening,parsed.amount)) return false;
     const chatId=message.chatId!;
     const at=message.timestamp*1000;
 
