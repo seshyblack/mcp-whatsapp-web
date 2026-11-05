@@ -94,16 +94,17 @@ export class AuctionTestSandbox {
       this.db.prepare('INSERT INTO auction_test_bids(message_id,chat_id,lot,amount,received_at_ms,verdict) VALUES (?,?,?,?,?,?)')
         .run(message.id,chatId,parsed.lot,parsed.amount,at,leading?'leading':'not_leading');
       const text=[
-        'CALMISTRY — TEST AUCTION',
-        'TEST bid received and recorded. No real bid has been placed.',
+        'CALMISTRY — PRIVATE COLLECTION',
+        '*TEST ACKNOWLEDGEMENT*',
         '',
-        'Your test bidder number: '+bidder,
-        'Lot: '+parsed.lot,
-        'Your test bid: '+price(parsed.amount),
-        'Status: '+(leading?'You are currently the highest TEST bidder.':'You are not currently the highest TEST bidder.'),
+        leading ? '*You are currently the highest bidder for Lot '+parsed.lot+'.*'
+                : '*You are not currently the highest bidder for Lot '+parsed.lot+'.*',
         '',
-        'This is a private simulation. Bidder names are not disclosed.',
-      ].filter((line,i,a)=>line!=='' || (i>0&&a[i-1]!=='')).join('\n');
+        'Your offer of '+price(parsed.amount)+' has been recorded.',
+        'Your bidder number · '+bidder,
+        '',
+        'This is a test only. No live auction bid has been placed.',
+      ].join('\n');
       this.addNotice('confirmation',chatId,message.id,text,at);
       if (leading&&previous&&previous.chatId!==chatId&&previousBidder) {
         this.addNotice('outbid',previous.chatId,message.id,[
