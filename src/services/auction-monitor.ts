@@ -100,6 +100,7 @@ export class AuctionSweepMonitor {
   }
   private record(m:SimpleMessage):boolean {
     if(this.stopped || m.fromMe || m.type!=='chat' || !/^\d+@(s\.whatsapp\.net|lid)$/.test(m.chatId||'')) return false;
+    if(this.mode==='preview' && this.tests.record(m,parseAuctionForm,OPENINGS)) return true;
     const b=parseAuctionForm(m.body) ?? parseAuctionFollowUp(m.body);
     if(!b || !m.id || !Number.isFinite(m.timestamp)) return false;
     if(b.followUp && !this.db.prepare('SELECT 1 FROM auction_bidders WHERE chat_id=?').get(m.chatId)) return false;
@@ -159,6 +160,7 @@ export class AuctionSweepMonitor {
         }));
       }
       await this.bidders.flush();
+      await this.tests.flush();
       this.setState('last_check_ms',String(Date.now()));
       this.setState('coverage',partial?'partial':'complete');
       if(!partial) this.setState('last_success_ms',String(now));
@@ -180,6 +182,7 @@ export class AuctionSweepMonitor {
       leading:this.db.prepare("SELECT lot,MAX(amount) AS amountSgd FROM monitored_bids WHERE mode='live' AND verdict='accepted' GROUP BY lot ORDER BY lot").all(),
       outbidDrafts:(this.db.prepare("SELECT COUNT(*) AS n FROM outbid_drafts WHERE status='draft'").get() as {n:number}).n,
       bidders:this.bidders.status(),
+      testSandbox:this.tests.status(),
       lastError:this.error||null, messagesSent:this.bidders.status().messagesSent, websiteUpdates:0,
       note:'Preview is isolated from live bids. Private bidder numbers and notices are created only for valid live bids; outbound requires a separate switch. No public updates.'
     };
