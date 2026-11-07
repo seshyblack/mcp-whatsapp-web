@@ -10,19 +10,19 @@ import { AuctionTestSandbox } from './auction-test-sandbox.js';
 const TWO_MINUTES = 120_000;
 const START = Date.parse('2026-11-08T10:00:00+08:00');
 const END = Date.parse('2026-11-22T21:00:00+08:00');
-const OPENINGS: Readonly<Record<string, number>> = {
-  '01':210,'02':870,'03':920,'04':240,'05':90,'06':260,'07':760,
-  '08':190,'09':70,'10':260,'11':190,'12':190,'13':90,'14':80,
-  '15':210,'16':240,'17':260,'18':120,'19':140,'20':130,'21':240,
+export const OPENINGS: Readonly<Record<string, number>> = {
+  '01':210,'02':1020,'03':1040,'04':240,'05':90,'06':290,'07':760,
+  '08':190,'09':70,'10':410,'11':190,'12':230,'13':90,'14':80,
+  '15':270,'16':290,'17':260,'18':120,'19':140,'20':130,'21':240,
   '22':90,'23':80,'24':70,'25':160,'26':80,'27':50,'28':120,
-  '29':100,'30':70,'31':170,'32':90,'33':210,
+  '29':100,'30':70,'31':170,'32':90,'33':210,'34':160
 };
 type Mode = 'preview' | 'live';
 interface ParsedBid { lot: string; amount: number; consent: boolean; followUp?: boolean; }
 interface Prior { chatId: string; amount: number; }
 export function parseAuctionForm(body: string): ParsedBid | null {
   if (!/^CALMISTRY\s*[—-]\s*PRIVATE COLLECTION AUCTION\s*$/mi.test(body)) return null;
-  const lot = body.match(/^Lot\s+(0[1-9]|[12][0-9]|3[0-3])\s*[—-]\s*[^\r\n]+$/mi);
+  const lot = body.match(/^Lot\s+(0[1-9]|[12][0-9]|3[0-4])\s*[—-]\s*[^\r\n]+$/mi);
   const bid = body.match(/^Bid:\s*SGD\s+([0-9][0-9,]*)\s*\(S\$\s*([0-9][0-9,]*)\)\s*$/mi);
   if (!lot || !bid) return { lot: '', amount: 0, consent: false };
   const amount = Number(bid[1]!.replace(/,/g,''));
@@ -37,7 +37,7 @@ export function parseAuctionForm(body: string): ParsedBid | null {
 
 /** Optional short follow-up format for already registered bidders only. */
 export function parseAuctionFollowUp(body: string): ParsedBid | null {
-  const match = body.trim().match(/^Bid\s+Lot\s+(0[1-9]|[12][0-9]|3[0-3])\s*:\s*S\$\s*([1-9][0-9]{0,8})$/i);
+  const match = body.trim().match(/^Bid\s+Lot\s+(0[1-9]|[12][0-9]|3[0-4])\s*:\s*S\$\s*([1-9][0-9]{0,8})$/i);
   if (!match) return null;
   const amount = Number(match[2]);
   return { lot:match[1]!, amount, consent:Number.isSafeInteger(amount), followUp:true };
