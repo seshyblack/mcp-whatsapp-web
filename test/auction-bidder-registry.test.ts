@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -159,4 +159,60 @@ test('existing bidder IDs migrate to unique persistent random 8xx values', () =>
     expect((db.prepare('SELECT public_number AS n FROM auction_bidders ORDER BY id').all() as Array<{n:number}>).map(x=>x.n)).toEqual(first);
     registry2.stop();
   } finally { db.close(); rmSync(dir,{recursive:true,force:true}); }
+});
+
+test('no bidder messages at or after close, and one owner-only top-three report', async () => {
+  const dir=mkdtempSync(path.join(tmpdir(),'auction-owner-report-'));
+  const dbPath=path.join(dir,'auction.sqlite');
+  const fake=fakeBackend();
+  const owner='6588741000@s.whatsapp.net';
+  const monitor=new AuctionSweepMonitor(fake.whatsapp,dbPath,'live',false,false,owner);
+  const a='650000031@s.whatsapp.net', b='650000032@s.whatsapp.net';
+  const closing=Date.parse('2026-11-22T21:00:00+08:00');
+  const clock=vi.spyOn(Date,'now');
+  try {
+    clock.mockReturnValue(Date.parse('2026-11-09T11:00:00+08:00'));
+    monitor.start();
+    fake.send(inbound('first',a,websiteBid('02',1020)));
+    fake.send(inbound('second',b,websiteBid('02',1070)));
+    expect(fake.sent).toHaveLength(0);
+    clock.mockReturnValue(closing+6*60_000);
+    await monitor.sweep();
+    expect(fake.sent).toHaveLength(1);
+    expect(fake.sent[0]!.to).toBe(owner);
+    expect(fake.sent[0]!.text).toContain('Lot 02 — Noma Drinks Cabinet');
+    expect(fake.sent[0]!.text).toContain('OWNER REVIEW ONLY');
+    expect(fake.sent[0]!.text).toContain('No winners confirmed');
+    await monitor.sweep();
+    expect(fake.sent).toHaveLength(1);
+    expect(monitor.status().ownerReportStatus).toMatch(/^sent:/);
+  } finally {
+    monitor.stop();
+    clock.mockRestore();
+    rmSync(dir,{recursive:true,force:true});
+  }
+});
+
+test('queued bidder acknowledgement is expired rather than sent when the auction closes', async () => {
+  const dir=mkdtempSync(path.join(tmpdir(),'auction-stop-at-close-'));
+  const db=new Database(path.join(dir,'auction.sqlite'));
+  const fake=fakeBackend();
+  const clock=vi.spyOn(Date,'now');
+  const closing=Date.parse('2026-11-22T21:00:00+08:00');
+  try {
+    clock.mockReturnValue(closing-1000);
+    const registry=new AuctionBidderRegistry(db,fake.whatsapp,true);
+    registry.registerBid({messageId:'preclose',chatId:'650000039@s.whatsapp.net',lot:'02',
+      amount:1020,at:Date.now(),verdict:'accepted'});
+    expect(registry.status().noticeBreakdown).toMatchObject([{state:'pending',kind:'confirmation',count:1}]);
+    clock.mockReturnValue(closing);
+    await registry.flush();
+    expect(fake.sent).toHaveLength(0);
+    expect(registry.status().noticeBreakdown).toMatchObject([{state:'expired',kind:'confirmation',count:1}]);
+    registry.stop();
+  } finally {
+    clock.mockRestore();
+    db.close();
+    rmSync(dir,{recursive:true,force:true});
+  }
 });
