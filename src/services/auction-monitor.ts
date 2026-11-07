@@ -193,60 +193,45 @@ export class AuctionSweepMonitor {
     }finally{this.running=false;}
   }
 
-  /** Top THREE distinct bidders for every lot (each person's highest valid offer).
-   *  Do not imply a winning sale: reserves and approvals are owner-only decisions.
-   */
+
+  /** Three highest distinct bidders by their best VALID pre-close bid on each lot. */
   closingReport(): string {
     const lines = [
       'CALMISTRY — PRIVATE AUCTION / OWNER REPORT',
       'Closed 22 Nov 2026, 9pm (GMT+8)',
-      'Top three unique bidders per lot. No winners confirmed; all reserves confidential.',
+      'Top three unique bidders per lot. NOT a winner announcement; confirm reserves manually.',
       '',
     ];
-    const ranked = this.db.prepare(`
-      SELECT b.lot, b.chat_id AS chatId, MAX(b.amount) AS amount,
-        p.public_number AS bidderNumber, p.display_name AS name,
-        MIN(b.received_at) AS firstAt
-      FROM monitored_bids b
-      JOIN auction_bidders p ON p.chat_id=b.chat_id
-      WHERE b.mode='live' AND b.verdict IN ('accepted','registered_not_leading')
-        AND b.received_at>=? AND b.received_at<?
-      GROUP BY b.lot,b.chat_id
-      ORDER BY b.lot, amount DESC, firstAt ASC
-    `).all(START,END) as Array<{lot:string;chatId:string;amount:number;bidderNumber:number;name:string|null;firstAt:number}>;
+    const ranked = this.db.prepare([
+      'SELECT b.lot, b.chat_id AS chatId, MAX(b.amount) AS amount,',
+      'p.public_number AS bidderNumber, p.display_name AS name,',
+      'MIN(b.received_at) AS firstAt',
+      'FROM monitored_bids b JOIN auction_bidders p ON p.chat_id=b.chat_id',
+      "WHERE b.mode='live' AND b.verdict IN ('accepted','registered_not_leading')",
+      'AND b.received_at>=? AND b.received_at<?',
+      'GROUP BY b.lot,b.chat_id',
+      'ORDER BY b.lot, amount DESC, firstAt ASC',
+    ].join(' ')).all(START,END) as Array<{
+      lot:string;chatId:string;amount:number;bidderNumber:number;name:string|null;firstAt:number;
+    }>;
     for (let i=1;i<=34;i++) {
-      const lot=String(i).padStart(2,'0'), candidates=ranked.filter(x=>x.lot===lot).slice(0,3);
+      const lot=String(i).padStart(2,'0');
+      const candidates=ranked.filter(x=>x.lot===lot).slice(0,3);
       lines.push('Lot '+lot+' — '+LOT_NAMES[lot]);
       if (!candidates.length) { lines.push('  No valid bids'); continue; }
       for (const [rank,bid] of candidates.entries()) {
-        lines.push('  '+(rank+1)+'. '+bid.bidderNumber+' · S
-      enabled:!this.stopped,mode:this.mode,frequencySeconds:120,
-      ownerReportStatus:this.state('owner_report_status')||'not_sent',
-      lastCheck:this.state('last_check_ms')?new Date(Number(this.state('last_check_ms'))).toISOString():null,
-      coverage:this.state('coverage')||'not_run',
-      breakdown:this.db.prepare('SELECT verdict,COUNT(*) AS count FROM monitored_bids GROUP BY verdict').all(),
-      leading:this.db.prepare("SELECT lot,MAX(amount) AS amountSgd FROM monitored_bids WHERE mode='live' AND verdict='accepted' GROUP BY lot ORDER BY lot").all(),
-      outbidDrafts:(this.db.prepare("SELECT COUNT(*) AS n FROM outbid_drafts WHERE status='draft'").get() as {n:number}).n,
-      bidders:this.bidders.status(),
-      testSandbox:this.tests.status(),
-      lastError:this.error||null, messagesSent:this.bidders.status().messagesSent, websiteUpdates:0,
-      note:'Preview is isolated from live bids. Private bidder numbers and notices are created only for valid live bids; outbound requires a separate switch. No public updates.'
-    };
-  }
-}
-+bid.amount.toLocaleString('en-SG')+
+        lines.push('  '+(rank+1)+'. '+bid.bidderNumber+' · S$'+bid.amount.toLocaleString('en-SG')+
           (bid.name?' · '+bid.name:'')+' · '+bid.chatId);
       }
     }
     lines.push('', 'OWNER REVIEW ONLY — check reserves and contact successful bidders manually.');
-    return lines.join('\\n');
+    return lines.join('\n');
   }
 
-  /** At-most-once private owner message; never broadcast a closing result.
-   *  If delivery becomes uncertain, operator must inspect it manually.
-   */
+  /** At most one owner send. If delivery is uncertain, never automatically retry. */
   private async sendOwnerReport(): Promise<void> {
-    if (this.ownerSending || !this.ownerReportJid || !/^\\d+@s\\.whatsapp\\.net$/.test(this.ownerReportJid) ||
+    if (this.ownerSending || !this.ownerReportJid ||
+      !/^\d+@s\.whatsapp\.net$/.test(this.ownerReportJid) ||
       this.state('owner_report_status') || !this.whatsapp.isAuthenticated()) return;
     this.ownerSending=true;
     try {
@@ -258,9 +243,10 @@ export class AuctionSweepMonitor {
       log.error('Calmistry owner closing report delivery uncertain; no automatic retry',error);
     } finally { this.ownerSending=false; }
   }
-  status(){
+  status() {
     return {
       enabled:!this.stopped,mode:this.mode,frequencySeconds:120,
+      ownerReportStatus:this.state('owner_report_status')||'not_sent',
       lastCheck:this.state('last_check_ms')?new Date(Number(this.state('last_check_ms'))).toISOString():null,
       coverage:this.state('coverage')||'not_run',
       breakdown:this.db.prepare('SELECT verdict,COUNT(*) AS count FROM monitored_bids GROUP BY verdict').all(),
@@ -268,8 +254,8 @@ export class AuctionSweepMonitor {
       outbidDrafts:(this.db.prepare("SELECT COUNT(*) AS n FROM outbid_drafts WHERE status='draft'").get() as {n:number}).n,
       bidders:this.bidders.status(),
       testSandbox:this.tests.status(),
-      lastError:this.error||null, messagesSent:this.bidders.status().messagesSent, websiteUpdates:0,
-      note:'Preview is isolated from live bids. Private bidder numbers and notices are created only for valid live bids; outbound requires a separate switch. No public updates.'
+      lastError:this.error||null,messagesSent:this.bidders.status().messagesSent,websiteUpdates:0,
+      note:'Immediate private outbid notices while open. No bidder sends after close; owner-only top three report.',
     };
   }
 }
