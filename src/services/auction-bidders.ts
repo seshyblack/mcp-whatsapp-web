@@ -10,7 +10,7 @@ interface Leader { chatId: string; amount: number; }
 interface Notice { id: number; chatId: string; text: string; }
 
 export function bidderLabel(id: number): string {
-  return 'B' + String(id).padStart(3, '0');
+  return String(id).padStart(3, '0');
 }
 
 function sgd(amount: number): string {
