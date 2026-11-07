@@ -53,7 +53,7 @@ test('parses new form terms and only explicit short follow-up syntax', () => {
   expect(parseAuctionForm(websiteBid('02', 1020))).toMatchObject({lot:'02',amount:1020,consent:true});
   expect(parseAuctionForm(websiteBid('02', 1020).replace('Payment and collection deadlines:', 'Payment deadline:')))
     .toMatchObject({consent:false});
-  expect(parseAuctionFollowUp('Bid Lot 02: S$1120')).toMatchObject({lot:'02',amount:970,followUp:true});
+  expect(parseAuctionFollowUp('Bid Lot 02: S$1120')).toMatchObject({lot:'02',amount:1120,followUp:true});
   expect(parseAuctionFollowUp('I might pay S$1120 for Lot 02')).toBeNull();
 });
 
