@@ -10,15 +10,27 @@ import { AuctionTestSandbox } from './auction-test-sandbox.js';
 const TWO_MINUTES = 120_000;
 const START = Date.parse('2026-11-08T10:00:00+08:00');
 const END = Date.parse('2026-11-22T21:00:00+08:00');
+const OWNER_REPORT_GRACE = 5 * 60_000;
+const LOT_NAMES: Record<string,string> = Object.fromEntries([
+  'Alera Screen Divider','Noma Drinks Cabinet','Noma Cocktail Cabinet','Narana Divider',
+  'Auru Wall Accent (Giraffe)','Avara Bar Stool','Taj Round Table','Luma Decorative Panel',
+  'Varen Stool','Alera Coffee Table','Tanu Coffee Table','Senai Dining Chair',
+  'Veya Dining Chair','Naro Dining Chair','Lione Armchair','Bonnie Coffee Table',
+  'Soma Trolley','Zianna Curves Stool','Auri Armchair','Lora Pendant 90cm',
+  'Avami Leaf Pendant - Grande','Talo Pendant','Lora Pendant 50cm','Velin Pendant',
+  'Taro Headboard','Luma Mirror','Sona Pendant','Liora Headboard',
+  'Maro Accent Stool','Auru Wall Accent (Lion)','Suri Pendant','Auru Wall Accent (Elephant)',
+  'Veyana Screen Divider','Avami Leaf Pendant',
+].map((name,i)=>[String(i+1).padStart(2,'0'),name]));
 export const OPENINGS: Readonly<Record<string, number>> = {
-  '01':350,'02':1020,'03':1040,'04':350,'05':90,'06':290,'07':760,
+  '01':410,'02':1020,'03':1040,'04':350,'05':140,'06':360,'07':760,
   '08':190,'09':70,'10':410,'11':190,'12':230,'13':90,'14':80,
-  '15':270,'16':290,'17':260,'18':120,'19':140,'20':130,'21':240,
+  '15':270,'16':290,'17':330,'18':120,'19':140,'20':130,'21':240,
   '22':90,'23':80,'24':70,'25':160,'26':80,'27':50,'28':120,
-  '29':100,'30':70,'31':170,'32':90,'33':390,'34':160
+  '29':100,'30':140,'31':170,'32':140,'33':390,'34':230
 };
 type Mode = 'preview' | 'live';
-interface ParsedBid { lot: string; amount: number; consent: boolean; followUp?: boolean; }
+interface ParsedBid { lot: string; amount: number; consent: boolean; followUp?: boolean; name?: string; }
 interface Prior { chatId: string; amount: number; }
 export function parseAuctionForm(body: string): ParsedBid | null {
   if (!/^CALMISTRY\s*[—-]\s*PRIVATE COLLECTION AUCTION\s*$/mi.test(body)) return null;
@@ -32,7 +44,8 @@ export function parseAuctionForm(body: string): ParsedBid | null {
     /^Payment and collection deadlines:\s*understood and agreed\b/mi.test(body) &&
     /^Full name:\s*\S+/mi.test(body) && /^WhatsApp:\s*\+/mi.test(body) &&
     /^Delivery address:\s*\r?\n\S+/mi.test(body);
-  return {lot:lot[1]!,amount:Number.isSafeInteger(amount) && amount===repeat ? amount : 0,consent};
+  const name = body.match(/^Full name:\s*(.+)\s*$/mi)?.[1]?.trim();
+  return {lot:lot[1]!,amount:Number.isSafeInteger(amount) && amount===repeat ? amount : 0,consent,name};
 }
 
 /** Optional short follow-up format for already registered bidders only. */
@@ -55,10 +68,12 @@ export class AuctionSweepMonitor {
   private running = false;
   private stopped = false;
   private error = '';
+  private ownerSending = false;
   constructor(private readonly whatsapp: WhatsAppBackend, dbPath: string,
     private readonly mode: Mode = 'preview',
     private readonly notificationsEnabled = false,
-    private readonly testRepliesEnabled = false) {
+    private readonly testRepliesEnabled = false,
+    private readonly ownerReportJid: string | null = null) {
     mkdirSync(path.dirname(dbPath),{recursive:true,mode:0o700});
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
@@ -130,7 +145,7 @@ export class AuctionSweepMonitor {
             this.db.prepare("INSERT OR IGNORE INTO outbid_drafts(lot,chat_id,replaced_by) VALUES (?,?,?)").run(b.lot,previous.chatId,m.id);
           }
           this.bidders.registerBid({ messageId:m.id, chatId:m.chatId!, lot:b.lot,
-            amount:b.amount, at, verdict:verdict==='accepted'?'accepted':'too_low', previous });
+            amount:b.amount, at, verdict:verdict==='accepted'?'accepted':'too_low', previous, name:b.name });
         })();
         return true;
       }
@@ -162,6 +177,9 @@ export class AuctionSweepMonitor {
       }
       await this.bidders.flush();
       await this.tests.flush();
+      // No bidder messages after close. Only the owner receives one final report.
+      if (this.mode === 'live' && Date.now() >= END + OWNER_REPORT_GRACE &&
+          !partial) await this.sendOwnerReport();
       this.setState('last_check_ms',String(Date.now()));
       this.setState('coverage',partial?'partial':'complete');
       if(!partial) this.setState('last_success_ms',String(now));
@@ -173,6 +191,72 @@ export class AuctionSweepMonitor {
       this.setState('coverage','error');
       log.error('Auction monitor sweep failed: '+this.error);
     }finally{this.running=false;}
+  }
+
+  /** Top THREE distinct bidders for every lot (each person's highest valid offer).
+   *  Do not imply a winning sale: reserves and approvals are owner-only decisions.
+   */
+  closingReport(): string {
+    const lines = [
+      'CALMISTRY — PRIVATE AUCTION / OWNER REPORT',
+      'Closed 22 Nov 2026, 9pm (GMT+8)',
+      'Top three unique bidders per lot. No winners confirmed; all reserves confidential.',
+      '',
+    ];
+    const ranked = this.db.prepare(`
+      SELECT b.lot, b.chat_id AS chatId, MAX(b.amount) AS amount,
+        p.public_number AS bidderNumber, p.display_name AS name,
+        MIN(b.received_at) AS firstAt
+      FROM monitored_bids b
+      JOIN auction_bidders p ON p.chat_id=b.chat_id
+      WHERE b.mode='live' AND b.verdict IN ('accepted','registered_not_leading')
+        AND b.received_at>=? AND b.received_at<?
+      GROUP BY b.lot,b.chat_id
+      ORDER BY b.lot, amount DESC, firstAt ASC
+    `).all(START,END) as Array<{lot:string;chatId:string;amount:number;bidderNumber:number;name:string|null;firstAt:number}>;
+    for (let i=1;i<=34;i++) {
+      const lot=String(i).padStart(2,'0'), candidates=ranked.filter(x=>x.lot===lot).slice(0,3);
+      lines.push('Lot '+lot+' — '+LOT_NAMES[lot]);
+      if (!candidates.length) { lines.push('  No valid bids'); continue; }
+      for (const [rank,bid] of candidates.entries()) {
+        lines.push('  '+(rank+1)+'. '+bid.bidderNumber+' · S
+      enabled:!this.stopped,mode:this.mode,frequencySeconds:120,
+      ownerReportStatus:this.state('owner_report_status')||'not_sent',
+      lastCheck:this.state('last_check_ms')?new Date(Number(this.state('last_check_ms'))).toISOString():null,
+      coverage:this.state('coverage')||'not_run',
+      breakdown:this.db.prepare('SELECT verdict,COUNT(*) AS count FROM monitored_bids GROUP BY verdict').all(),
+      leading:this.db.prepare("SELECT lot,MAX(amount) AS amountSgd FROM monitored_bids WHERE mode='live' AND verdict='accepted' GROUP BY lot ORDER BY lot").all(),
+      outbidDrafts:(this.db.prepare("SELECT COUNT(*) AS n FROM outbid_drafts WHERE status='draft'").get() as {n:number}).n,
+      bidders:this.bidders.status(),
+      testSandbox:this.tests.status(),
+      lastError:this.error||null, messagesSent:this.bidders.status().messagesSent, websiteUpdates:0,
+      note:'Preview is isolated from live bids. Private bidder numbers and notices are created only for valid live bids; outbound requires a separate switch. No public updates.'
+    };
+  }
+}
++bid.amount.toLocaleString('en-SG')+
+          (bid.name?' · '+bid.name:'')+' · '+bid.chatId);
+      }
+    }
+    lines.push('', 'OWNER REVIEW ONLY — check reserves and contact successful bidders manually.');
+    return lines.join('\\n');
+  }
+
+  /** At-most-once private owner message; never broadcast a closing result.
+   *  If delivery becomes uncertain, operator must inspect it manually.
+   */
+  private async sendOwnerReport(): Promise<void> {
+    if (this.ownerSending || !this.ownerReportJid || !/^\\d+@s\\.whatsapp\\.net$/.test(this.ownerReportJid) ||
+      this.state('owner_report_status') || !this.whatsapp.isAuthenticated()) return;
+    this.ownerSending=true;
+    try {
+      this.setState('owner_report_status','sending');
+      const sent=await this.whatsapp.sendMessage(this.ownerReportJid,this.closingReport());
+      this.setState('owner_report_status','sent:'+sent.id);
+    } catch (error) {
+      this.setState('owner_report_status','uncertain');
+      log.error('Calmistry owner closing report delivery uncertain; no automatic retry',error);
+    } finally { this.ownerSending=false; }
   }
   status(){
     return {
