@@ -95,7 +95,7 @@ test('one stable private ID across lots, valid nonleading bids, outbid drafts an
       expect(notices).toHaveLength(7);
       expect(notices.every(n=>n.state==='draft')).toBe(true);
       expect(notices.filter(n=>n.kind==='outbid')).toHaveLength(2);
-      expect(notices.some(n=>/Your bidder number · 8\\d{2}/.test(n.text))).toBe(true);
+      expect(notices.some(n=>/Your bidder number · 8\d{2}/.test(n.text))).toBe(true);
       expect(notices.every(n=>!n.text.includes('Current highest bidder:'))).toBe(true);
       expect(notices.some(n=>n.text.includes('You are not currently the highest bidder for Lot 02.'))).toBe(true);
       expect(notices.every(n=>!n.text.includes('Example Guest')&&!n.text.includes('12345678'))).toBe(true);
@@ -127,7 +127,7 @@ test('opted-in WhatsApp acknowledgement is private and marked sent only after re
     await registry.flush();
     expect(fake.sent).toHaveLength(1);
     expect(fake.sent[0].to).toBe('650000007@s.whatsapp.net');
-    expect(fake.sent[0].text).toMatch(/Your bidder number · 8\\d{2}/);
+    expect(fake.sent[0].text).toMatch(/Your bidder number · 8\d{2}/);
     expect(fake.sent[0].text).toContain('You are currently the highest bidder');
     expect(registry.status().messagesSent).toBe(1);
     await registry.flush();
