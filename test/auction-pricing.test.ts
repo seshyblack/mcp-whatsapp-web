@@ -61,12 +61,12 @@ test('WhatsApp auction and website use identical opening bids for all 34 lots', 
   "30": 70,
   "31": 170,
   "32": 90,
-  "33": 210,
+  "33": 390,
   "34": 160,
-  "01": 210,
+  "01": 350,
   "02": 1020,
   "03": 1040,
-  "04": 240,
+  "04": 350,
   "05": 90,
   "06": 290,
   "07": 760,
@@ -85,4 +85,15 @@ test('Lot 34 valid website bid and follow-up are parsed without admitting nonexi
   expect(parseAuctionFollowUp('Bid Lot 35: S$160')).toBeNull();
   expect(parseAuctionForm(websiteBid('35',160))?.lot).not.toBe('35');
   expect(parseAuctionForm(websiteBid('34',160).replace('CALMISTRY — PRIVATE COLLECTION AUCTION','CALMISTRY AUCTION — TEST MESSAGE (NOT A BID)'))).toBeNull();
+});
+
+test('screen divider opening bids are protected at the new minimums', () => {
+  for (const [lot, opening] of [['01', 350], ['04', 350], ['33', 390]] as const) {
+    expect(OPENINGS[lot]).toBe(opening);
+    expect(validAuctionBidAmount(OPENINGS[lot], opening)).toBe(true);
+    expect(validAuctionBidAmount(OPENINGS[lot], opening + 10)).toBe(true);
+    expect(validAuctionBidAmount(OPENINGS[lot], opening - 10)).toBe(false);
+    expect(validAuctionBidAmount(OPENINGS[lot], opening + 5)).toBe(false);
+    expect(parseAuctionForm(websiteBid(lot, opening))).toMatchObject({ lot, amount: opening, consent: true });
+  }
 });
