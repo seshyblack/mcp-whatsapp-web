@@ -76,8 +76,8 @@ test('WhatsApp auction and website use identical opening bids for all 34 lots', 
 });
 
 test('Lot 34 valid website bid and follow-up are parsed without admitting nonexistent Lot 35', () => {
-  expect(parseAuctionForm(websiteBid('34', 230))).toEqual({lot:'34',amount:160,consent:true});
-  expect(parseAuctionFollowUp('Bid Lot 34: S$240')).toMatchObject({lot:'34',amount:170,followUp:true});
+  expect(parseAuctionForm(websiteBid('34', 230))).toMatchObject({lot:'34',amount:230,consent:true});
+  expect(parseAuctionFollowUp('Bid Lot 34: S$240')).toMatchObject({lot:'34',amount:240,followUp:true});
   expect(validAuctionBidAmount(OPENINGS['34'],230)).toBe(true);
   expect(validAuctionBidAmount(OPENINGS['34'],240)).toBe(true);
   expect(validAuctionBidAmount(OPENINGS['34'],220)).toBe(false);
