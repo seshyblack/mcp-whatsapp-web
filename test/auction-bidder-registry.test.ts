@@ -71,7 +71,7 @@ test('one stable private ID across lots, valid nonleading bids, outbid drafts an
     fake.send(inbound('b1',b,websiteBid('02',1070)));
     fake.send(inbound('c1',c,websiteBid('02',1020)));
     fake.send(inbound('a2',a,'Bid Lot 02: S$1120'));
-    fake.send(inbound('a3',a,'Bid Lot 06: S$290'));
+    fake.send(inbound('a3',a,'Bid Lot 06: S$360'));
     fake.send(inbound('a4',a,'Bid Lot 02: S$1120'));
 
     const state = monitor.status();
@@ -81,8 +81,10 @@ test('one stable private ID across lots, valid nonleading bids, outbid drafts an
     expect(fake.sent).toHaveLength(0);
     const db = new Database(dbPath, { readonly:true });
     try {
-      const people = db.prepare('SELECT id,chat_id AS chatId FROM auction_bidders ORDER BY id').all() as Array<{id:number;chatId:string}>;
-      expect(people).toEqual([{id:1,chatId:a},{id:2,chatId:b},{id:3,chatId:c}]);
+      const people = db.prepare('SELECT id,chat_id AS chatId,public_number AS number FROM auction_bidders ORDER BY id').all() as Array<{id:number;chatId:string;number:number}>;
+      expect(people.map(x=>({id:x.id,chatId:x.chatId}))).toEqual([{id:1,chatId:a},{id:2,chatId:b},{id:3,chatId:c}]);
+      expect(new Set(people.map(x=>x.number)).size).toBe(3);
+      expect(people.every(x=>x.number>=800 && x.number<=899)).toBe(true);
       const statuses = db.prepare('SELECT message_id AS id,verdict FROM monitored_bids ORDER BY rowid').all() as Array<{id:string;verdict:string}>;
       expect(statuses).toEqual([
         {id:'a1',verdict:'accepted'}, {id:'b1',verdict:'accepted'},
@@ -93,10 +95,19 @@ test('one stable private ID across lots, valid nonleading bids, outbid drafts an
       expect(notices).toHaveLength(7);
       expect(notices.every(n=>n.state==='draft')).toBe(true);
       expect(notices.filter(n=>n.kind==='outbid')).toHaveLength(2);
-      expect(notices.some(n=>n.text.includes('Your bidder number · B001'))).toBe(true);
+      expect(notices.some(n=>/Your bidder number · 8\\d{2}/.test(n.text))).toBe(true);
       expect(notices.every(n=>!n.text.includes('Current highest bidder:'))).toBe(true);
       expect(notices.some(n=>n.text.includes('You are not currently the highest bidder for Lot 02.'))).toBe(true);
       expect(notices.every(n=>!n.text.includes('Example Guest')&&!n.text.includes('12345678'))).toBe(true);
+      const summary = monitor.closingReport();
+      expect(summary).toContain('Lot 02 — Noma Drinks Cabinet');
+      expect(summary).toContain('1. '+people[0]!.number+' · S$1,120');
+      expect(summary).toContain('2. '+people[1]!.number+' · S$1,070');
+      expect(summary).toContain('3. '+people[2]!.number+' · S$1,020');
+      expect(summary).toContain('Lot 34 — Avami Leaf Pendant');
+      expect(summary).toContain('OWNER REVIEW ONLY');
+      expect(summary).not.toContain('B001');
+
     } finally { db.close(); }
   } finally {
     monitor.stop();
@@ -116,7 +127,7 @@ test('opted-in WhatsApp acknowledgement is private and marked sent only after re
     await registry.flush();
     expect(fake.sent).toHaveLength(1);
     expect(fake.sent[0].to).toBe('650000007@s.whatsapp.net');
-    expect(fake.sent[0].text).toContain('Your bidder number · B001');
+    expect(fake.sent[0].text).toMatch(/Your bidder number · 8\\d{2}/);
     expect(fake.sent[0].text).toContain('You are currently the highest bidder');
     expect(registry.status().messagesSent).toBe(1);
     await registry.flush();
@@ -126,4 +137,26 @@ test('opted-in WhatsApp acknowledgement is private and marked sent only after re
     db.close();
     rmSync(dir,{recursive:true,force:true});
   }
+});
+
+test('existing bidder IDs migrate to unique persistent random 8xx values', () => {
+  const dir=mkdtempSync(path.join(tmpdir(),'auction-migrate-'));
+  const db=new Database(path.join(dir,'auction.sqlite'));
+  const fake=fakeBackend();
+  try {
+    db.exec('CREATE TABLE auction_bidders (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT NOT NULL UNIQUE, first_bid_at INTEGER NOT NULL)');
+    db.prepare('INSERT INTO auction_bidders(chat_id,first_bid_at) VALUES(?,?)').run('650000021@s.whatsapp.net',1);
+    db.prepare('INSERT INTO auction_bidders(chat_id,first_bid_at) VALUES(?,?)').run('650000022@s.whatsapp.net',2);
+    let first:number[];
+    {
+      const registry=new AuctionBidderRegistry(db,fake.whatsapp,false);
+      first=(db.prepare('SELECT public_number AS n FROM auction_bidders ORDER BY id').all() as Array<{n:number}>).map(x=>x.n);
+      registry.stop();
+    }
+    expect(first.every(n=>n>=800&&n<=899)).toBe(true);
+    expect(new Set(first).size).toBe(2);
+    const registry2=new AuctionBidderRegistry(db,fake.whatsapp,false);
+    expect((db.prepare('SELECT public_number AS n FROM auction_bidders ORDER BY id').all() as Array<{n:number}>).map(x=>x.n)).toEqual(first);
+    registry2.stop();
+  } finally { db.close(); rmSync(dir,{recursive:true,force:true}); }
 });
