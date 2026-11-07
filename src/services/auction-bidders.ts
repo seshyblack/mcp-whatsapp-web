@@ -67,7 +67,7 @@ export class AuctionBidderRegistry {
   private number(chatId: string, at: number, name?: string): string {
     const query = this.db.prepare('SELECT public_number AS number FROM auction_bidders WHERE chat_id=?');
     const existing = query.get(chatId) as {number:number}|undefined;
-    const cleanName = name?.replace(/[\\r\\n]/g,' ').trim().slice(0,100) || null;
+    const cleanName = name?.replace(/[\r\n]/g,' ').trim().slice(0,100) || null;
     if (existing) {
       if (cleanName) this.db.prepare('UPDATE auction_bidders SET display_name=COALESCE(display_name,?) WHERE chat_id=?').run(cleanName,chatId);
       return bidderLabel(existing.number);
