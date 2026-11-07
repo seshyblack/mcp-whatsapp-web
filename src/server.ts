@@ -98,7 +98,8 @@ export class WhatsAppMcpServer {
       const mode = process.env.AUCTION_MONITOR_MODE === 'live' ? 'live' : 'preview';
       this.auctionMonitor = new AuctionSweepMonitor(this.whatsapp, db, mode,
         process.env.AUCTION_NOTICES_ENABLED === 'true',
-        process.env.AUCTION_TEST_REPLIES_ENABLED === 'true');
+        process.env.AUCTION_TEST_REPLIES_ENABLED === 'true',
+        process.env.AUCTION_OWNER_REPORT_JID || null);
       this.auctionMonitor.start();
     }
     if (this.whatsapp.backend === 'webjs') {
