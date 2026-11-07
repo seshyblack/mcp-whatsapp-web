@@ -199,7 +199,7 @@ export class AuctionSweepMonitor {
     const lines = [
       'CALMISTRY — PRIVATE AUCTION / OWNER REPORT',
       'Closed 22 Nov 2026, 9pm (GMT+8)',
-      'Top three unique bidders per lot. NOT a winner announcement; confirm reserves manually.',
+      'Top three unique bidders per lot. No winners confirmed; check reserves manually.',
       '',
     ];
     const ranked = this.db.prepare([
