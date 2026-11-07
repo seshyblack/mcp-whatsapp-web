@@ -50,11 +50,11 @@ function fakeBackend() {
 }
 
 test('parses new form terms and only explicit short follow-up syntax', () => {
-  expect(parseAuctionForm(websiteBid('02', 870))).toMatchObject({lot:'02',amount:870,consent:true});
-  expect(parseAuctionForm(websiteBid('02', 870).replace('Payment and collection deadlines:', 'Payment deadline:')))
+  expect(parseAuctionForm(websiteBid('02', 1020))).toMatchObject({lot:'02',amount:1020,consent:true});
+  expect(parseAuctionForm(websiteBid('02', 1020).replace('Payment and collection deadlines:', 'Payment deadline:')))
     .toMatchObject({consent:false});
-  expect(parseAuctionFollowUp('Bid Lot 02: S$970')).toMatchObject({lot:'02',amount:970,followUp:true});
-  expect(parseAuctionFollowUp('I might pay S$970 for Lot 02')).toBeNull();
+  expect(parseAuctionFollowUp('Bid Lot 02: S$1120')).toMatchObject({lot:'02',amount:970,followUp:true});
+  expect(parseAuctionFollowUp('I might pay S$1120 for Lot 02')).toBeNull();
 });
 
 test('one stable private ID across lots, valid nonleading bids, outbid drafts and no preview sends', () => {
@@ -66,13 +66,13 @@ test('one stable private ID across lots, valid nonleading bids, outbid drafts an
   const c='650000003@s.whatsapp.net', unknown='650000004@s.whatsapp.net';
   try {
     monitor.start();
-    fake.send(inbound('unknown',unknown,'Bid Lot 02: S$970'));
-    fake.send(inbound('a1',a,websiteBid('02',870)));
-    fake.send(inbound('b1',b,websiteBid('02',920)));
-    fake.send(inbound('c1',c,websiteBid('02',870)));
-    fake.send(inbound('a2',a,'Bid Lot 02: S$970'));
-    fake.send(inbound('a3',a,'Bid Lot 06: S$260'));
-    fake.send(inbound('a4',a,'Bid Lot 02: S$970'));
+    fake.send(inbound('unknown',unknown,'Bid Lot 02: S$1120'));
+    fake.send(inbound('a1',a,websiteBid('02',1020)));
+    fake.send(inbound('b1',b,websiteBid('02',1070)));
+    fake.send(inbound('c1',c,websiteBid('02',1020)));
+    fake.send(inbound('a2',a,'Bid Lot 02: S$1120'));
+    fake.send(inbound('a3',a,'Bid Lot 06: S$290'));
+    fake.send(inbound('a4',a,'Bid Lot 02: S$1120'));
 
     const state = monitor.status();
     expect(state.bidders.registeredBidders).toBe(3);
@@ -111,7 +111,7 @@ test('opted-in WhatsApp acknowledgement is private and marked sent only after re
   const registry=new AuctionBidderRegistry(db,fake.whatsapp,true);
   try {
     registry.registerBid({messageId:'fresh1',chatId:'650000007@s.whatsapp.net',
-      lot:'02',amount:870,at:Date.now(),verdict:'accepted'});
+      lot:'02',amount:1020,at:Date.now(),verdict:'accepted'});
     expect(registry.status().noticeBreakdown).toMatchObject([{state:'pending',kind:'confirmation',count:1}]);
     await registry.flush();
     expect(fake.sent).toHaveLength(1);
