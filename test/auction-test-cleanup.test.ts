@@ -11,6 +11,9 @@ function fixture() {
     "CREATE TABLE auction_notices(id INTEGER PRIMARY KEY,source_message_id TEXT,kind TEXT,state TEXT)",
     "CREATE TABLE outbid_drafts(id INTEGER PRIMARY KEY,replaced_by TEXT)",
     "CREATE TABLE monitor_state(key TEXT PRIMARY KEY,value TEXT)",
+    "CREATE TABLE auction_test_notices(id INTEGER PRIMARY KEY,text TEXT)",
+    "CREATE TABLE auction_test_bids(message_id TEXT PRIMARY KEY)",
+    "CREATE TABLE auction_test_bidders(id INTEGER PRIMARY KEY)",
   ].join(';') + ';');
   const add=db.prepare('INSERT INTO monitored_bids VALUES(?,?,?,?,?,?,?)');
   for(const a of [410,420,500]) add.run('test-'+a,'6588747000@s.whatsapp.net','01',a,testsAt,'live','accepted');
@@ -22,6 +25,9 @@ function fixture() {
   db.prepare('INSERT INTO auction_notices VALUES(?,?,?,?)').run(2,'test-500','confirmation','pending');
   db.prepare('INSERT INTO auction_notices VALUES(?,?,?,?)').run(3,'real-600','confirmation','sent');
   db.prepare('INSERT INTO outbid_drafts VALUES(?,?)').run(1,'test-500');
+  db.prepare('INSERT INTO auction_test_notices VALUES(?,?)').run(1,'test only');
+  db.prepare('INSERT INTO auction_test_bids VALUES(?)').run('preview-1');
+  db.prepare('INSERT INTO auction_test_bidders VALUES(?)').run(1);
   return db;
 }
 
@@ -35,6 +41,9 @@ test('removes only three owner-identified live test bids, clears their notices a
     expect((db.prepare('SELECT public_number AS n FROM auction_bidders').get() as {n:number}).n).toBe(868);
     expect((db.prepare('SELECT COUNT(*) AS n FROM auction_notices').get() as {n:number}).n).toBe(1);
     expect((db.prepare('SELECT COUNT(*) AS n FROM outbid_drafts').get() as {n:number}).n).toBe(0);
+    for(const table of ['auction_test_notices','auction_test_bids','auction_test_bidders']) {
+      expect((db.prepare('SELECT COUNT(*) AS n FROM '+table).get() as {n:number}).n).toBe(0);
+    }
     for(const a of [410,420,500]) expect(isDeletedAuctionTestMessage(db,'test-'+a)).toBe(true);
     expect(isDeletedAuctionTestMessage(db,'real-600')).toBe(false);
     expect(removeKnownOpeningTestBids(db)).toBe(0);
