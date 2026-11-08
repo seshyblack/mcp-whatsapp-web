@@ -39,7 +39,9 @@ export function parseAuctionForm(body: string): ParsedBid | null {
   // title, item, amount, identity, address and affirmative, unchanged terms.
   // Older messages remain supported below for bids already in the WhatsApp history.
   const compact = body.match(/^\*NEW BID\s*[—-]\s*Lot\s+(0[1-9]|[12][0-9]|3[0-4])\s*·\s*(.+?)\s*·\s*S\$\s*([0-9][0-9,]*)\*\s*$/mi);
-  if (compact) {
+  // Legacy 8 Nov submissions also had the NEW BID title but retained the
+  // old CALMISTRY parser header. Continue to accept those in-flight messages.
+  if (compact && !/^CALMISTRY\s*[—-]\s*PRIVATE COLLECTION AUCTION\s*$/mi.test(body)) {
     const item = body.match(/^Item:\s*(.+?)\s*\(Lot\s+(0[1-9]|[12][0-9]|3[0-4])\)\s*$/mi);
     const amountField = body.match(/^Bid:\s*S\$\s*([0-9][0-9,]*)\s*$/mi);
     const name = body.match(/^Name:\s*(.+?)\s*$/mi)?.[1]?.trim();
