@@ -105,6 +105,37 @@ describe('private bidder notification ledger', () => {
     book.close();
   });
 
+  it('records 50 concurrent-time bids on one lot, deduplicates them and queues private notifications without public posts', () => {
+    const book = fixture();
+    const chats: string[] = [];
+    for (let index = 0; index < 50; index++) {
+      const chatId = (60155000000 + index) + '@s.whatsapp.net';
+      const id = 'burst-' + index;
+      chats.push(chatId);
+      expect(book.handle({ ...message(chatId, id + '-share', '', t), productId }).status).toBe('selected');
+      expect(book.handle(message(chatId, id + '-bid', 'My bid is RM ' + (100 + index), t)).status).toBe('pending_terms');
+      expect(book.handle(message(chatId, id + '-agree', 'I AGREE', t + 1000)).status).toBe('confirmed');
+    }
+    expect(book.bidCount()).toBe(50);
+    expect(book.digest()[0]).toMatchObject({ highestCents: 14900, bidCount: 50 });
+    expect(book.listNotices(100)).toHaveLength(99); // 50 new leaders, 49 outbid events.
+    expect(book.handle(message(chats[49]!, 'burst-49-bid', 'My bid is RM 149', t)).status).toBe('duplicate');
+    expect(book.bidCount()).toBe(50);
+    // Earlier leading cards must be skipped if the leader has already been superseded.
+    const claimed = [];
+    let next;
+    while ((next = book.claimNextNotice(t + 2000))) {
+      claimed.push(next);
+      if (claimed.length > 100) throw new Error('Unexpected notification loop');
+    }
+    expect(claimed.filter(n => n.kind === 'leading')).toHaveLength(1);
+    expect(claimed.filter(n => n.kind === 'outbid')).toHaveLength(49);
+    expect(book.noticeCounts().skipped).toBe(49);
+    expect(claimed.every(n => n.chatId.endsWith('@s.whatsapp.net'))).toBe(true);
+    expect(claimed.some(n => n.chatId.endsWith('@newsletter'))).toBe(false);
+    book.close();
+  });
+
   it('never treats an unrelated WhatsApp price conversation as an auction bid', () => {
     const book = fixture();
     const result = book.handle(message(a, 'ordinary-chat', 'It is RM 450. Is that alright?'));
