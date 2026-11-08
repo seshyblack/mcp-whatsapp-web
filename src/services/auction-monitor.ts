@@ -14,11 +14,11 @@ const START = Date.parse('2026-11-08T10:00:00+08:00');
 const END = Date.parse('2026-11-22T21:00:00+08:00');
 const OWNER_REPORT_GRACE = 5 * 60_000;
 const LOT_NAMES: Record<string,string> = Object.fromEntries([
-  'Alera Divider','Noma Drinks Cabinet','Noma Cocktail Cabinet','Narana Divider',
+  'Alera Divider','Noma Drinks Cabinet','Noma Cocktail Cabinet','Narana Screen Divider',
   'Auru Wall Accent (Giraffe)','Avara Bar Stool','Taj Round Table','Luma Decorative Panel',
   'Varen Stool','Alera Coffee Table','Tanu Coffee Table','Senai Dining Chair',
   'Veya Dining Chair','Naro Dining Chair','Lione Armchair','Bonnie Coffee Table',
-  'Soma Trolley','Zianna Curves Stool','Auri Armchair','Lora Pendant 90cm',
+  'Soma Drinks Trolley','Zianna Curves Stool','Auri Armchair','Lora Pendant 90cm',
   'Avami Leaf Pendant - Grande','Talo Pendant','Lora Pendant 50cm','Velin Pendant',
   'Taro Headboard','Luma Mirror','Sona Pendant','Liora Headboard',
   'Maro Accent Stool','Auru Wall Accent (Lion)','Suri Pendant','Auru Wall Accent (Elephant)',
