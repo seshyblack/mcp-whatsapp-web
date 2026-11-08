@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import { randomInt } from 'node:crypto';
 import type { WhatsAppBackend } from './backend.js';
 import { log } from '../utils/logger.js';
+import { MINIMUM_INCREMENT_SGD } from './auction-pricing.js';
 
 type NoticeKind = 'confirmation' | 'outbid';
 const AUCTION_CLOSE_AT = Date.parse('2026-11-22T21:00:00+08:00');
@@ -84,38 +85,47 @@ export class AuctionBidderRegistry {
    */
   registerBid(input: {
     messageId: string; chatId: string; lot: string; amount: number;
-    at: number; verdict: Verdict; previous?: Leader; name?: string;
+    at: number; verdict: Verdict; previous?: Leader; name?: string; lotName?: string;
   }): string {
     const { messageId, chatId, lot, amount, at, verdict, previous, name } = input;
     const number = this.number(chatId, at, name);
     const previousNumber = previous ? this.number(previous.chatId, at) : undefined;
+    // Names are descriptive only; the canonical bidder identity is the incoming chat ID.
+    const itemName = input.lotName?.replace(/[\r\n]/g, ' ').trim() || 'Item';
+    const lotTitle = 'Lot ' + lot + ' · ' + itemName;
     const leading = verdict === 'accepted';
+    const next = previous ? previous.amount + MINIMUM_INCREMENT_SGD : null;
     const text = [
-      'CALMISTRY — PRIVATE COLLECTION',
+      '*BID RECEIVED — ' + lotTitle + ' · ' + sgd(amount) + '*',
+      '',
+      'Bidder number: ' + number,
+      leading ? 'Status: *Highest bid*' : 'Status: *Not currently highest*',
+      ...(!leading && previous ? ['Current highest bid: *' + sgd(previous.amount) + '*'] : []),
+      '',
+      '────────────',
       '',
       leading
-        ? '*You are currently the highest bidder for Lot ' + lot + '.*'
-        : '*You are not currently the highest bidder for Lot ' + lot + '.*',
-      '',
-      'Your offer of ' + sgd(amount) + ' has been recorded.',
-      'Your bidder number · ' + number,
-      '',
-      leading
-        ? 'We will notify you privately if you are outbid.'
-        : 'You are welcome to submit a further offer in the same WhatsApp chat.',
-      'The winning bid is confirmed after the auction closes.',
+        ? '_We will notify you privately if you are outbid. Winning bid confirmed after auction closes._'
+        : '_Minimum next bid: ' + (next === null ? 'subject to current bids' : sgd(next)) +
+          '. To bid again, reply: Bid Lot ' + lot + ': ' + (next === null ? 'S$[amount]' : sgd(next)) + ' (or higher)._',
     ].join('\n');
     this.queue('confirmation', chatId, messageId, text, at);
 
+    // Send the displaced highest bidder their own bid, the new highest bid and
+    // an executable follow-up message. Never disclose the competing bidder.
     if (leading && previous && previous.chatId !== chatId && previousNumber) {
+      const nextBid = amount + MINIMUM_INCREMENT_SGD;
       const outbidText = [
-        'CALMISTRY — PRIVATE COLLECTION',
+        '*OUTBID — ' + lotTitle + '*',
         '',
-        '*You have been outbid on Lot ' + lot + '.*',
+        'Your bid: ' + sgd(previous.amount),
+        'New highest bid: *' + sgd(amount) + '*',
+        'Your bidder number: ' + previousNumber,
         '',
-        'Your bidder number · ' + previousNumber,
+        '────────────',
         '',
-        'If you wish to place a further offer, you may do so in this WhatsApp chat.',
+        '_You have been outbid. Minimum next bid: ' + sgd(nextBid) +
+          '. To bid again, reply: Bid Lot ' + lot + ': ' + sgd(nextBid) + ' (or higher)._',
       ].join('\n');
       this.queue('outbid', previous.chatId, messageId, outbidText, at);
     }
