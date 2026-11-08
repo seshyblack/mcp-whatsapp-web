@@ -53,6 +53,10 @@ function compactWebsiteBid(lot: string, name: string, amount: number): string {
   return [
     '*NEW BID — Lot ' + lot + ' · ' + name + ' · S
   expect(parseAuctionForm(websiteBid('02', 1020))).toMatchObject({lot:'02',amount:1020,consent:true});
+  // Earlier live handoffs carried the same NEW BID title plus the original
+  // full parser header; these remain valid after the compact-format launch.
+  expect(parseAuctionForm('*NEW BID — Lot 02 · Example piece · S$1,020*\n\n'+websiteBid('02',1020)))
+    .toMatchObject({lot:'02',amount:1020,consent:true});
   expect(parseAuctionForm(websiteBid('02', 1020).replace('Payment and collection deadlines:', 'Payment deadline:')))
     .toMatchObject({consent:false});
   expect(parseAuctionFollowUp('Bid Lot 02: S$1120')).toMatchObject({lot:'02',amount:1120,followUp:true});
