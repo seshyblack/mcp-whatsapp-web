@@ -6,6 +6,7 @@ import { log } from '../utils/logger.js';
 import { AuctionBidderRegistry } from './auction-bidders.js';
 import { validAuctionBidAmount } from './auction-pricing.js';
 import { AuctionTestSandbox } from './auction-test-sandbox.js';
+import { removeKnownOpeningTestBids, isDeletedAuctionTestMessage } from './auction-test-cleanup.js';
 
 const TWO_MINUTES = 120_000;
 const START = Date.parse('2026-11-08T10:00:00+08:00');
@@ -88,6 +89,7 @@ export class AuctionSweepMonitor {
       this.mode === 'live' && this.notificationsEnabled);
     this.tests = new AuctionTestSandbox(this.db,this.whatsapp,
       this.mode === 'preview' && this.testRepliesEnabled);
+    if (this.mode === 'live') removeKnownOpeningTestBids(this.db);
   }
   start(): void {
     if (this.whatsapp.onIncomingMessage) this.unsubscribe = this.whatsapp.onIncomingMessage((m) => {
@@ -116,6 +118,7 @@ export class AuctionSweepMonitor {
   }
   private record(m:SimpleMessage):boolean {
     if(this.stopped || m.fromMe || m.type!=='chat' || !/^\d+@(s\.whatsapp\.net|lid)$/.test(m.chatId||'')) return false;
+    if (this.mode === 'live' && m.id && isDeletedAuctionTestMessage(this.db, m.id)) return false;
     if(this.mode==='preview' && this.tests.record(m,parseAuctionForm,OPENINGS)) return true;
     const b=parseAuctionForm(m.body) ?? parseAuctionFollowUp(m.body);
     if(!b || !m.id || !Number.isFinite(m.timestamp)) return false;
