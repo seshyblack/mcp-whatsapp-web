@@ -56,7 +56,13 @@ export function removeKnownOpeningTestBids(db: Database.Database): number {
       .get(TEST_CHAT);
     if (!stillUsed) db.prepare('DELETE FROM auction_bidders WHERE chat_id=?').run(TEST_CHAT);
 
-    db.prepare('INSERT INTO monitor_state(key,value) VALUES (?,?)').run(CLEANUP_KEY, 'removed_3');
+    // The separate pre-opening sandbox is no longer active after auction start.
+    // Clear ALL preview-only test records too; these never count as real bids.
+    db.prepare('DELETE FROM auction_test_notices').run();
+    db.prepare('DELETE FROM auction_test_bids').run();
+    db.prepare('DELETE FROM auction_test_bidders').run();
+
+    db.prepare('INSERT INTO monitor_state(key,value) VALUES (?,?)').run(CLEANUP_KEY, 'removed_3_and_preview_sandbox');
     return matches.length;
   })();
 
