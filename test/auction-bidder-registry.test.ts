@@ -49,8 +49,44 @@ function fakeBackend() {
   return { whatsapp, send: (m: SimpleMessage) => incoming(m), sent };
 }
 
+function compactWebsiteBid(lot: string, name: string, amount: number): string {
+  const amt = amount.toLocaleString('en-SG');
+  return [
+    '*NEW BID — Lot ' + lot + ' · ' + name + ' · S$' + amt + '*',
+    '',
+    'Name: Example Guest',
+    'WhatsApp: +6512345678',
+    'Item: ' + name + ' (Lot ' + lot + ')',
+    'Bid: S$' + amt,
+    'Delivery: 10 Example Road, Singapore 123456',
+    '',
+    '────────────',
+    '',
+    '*Terms accepted*',
+    '_Bidding rules agreed · Bank transfer within 24h of closing if successful · Collection within 7 days if self-collecting · Data consent granted · Bid valid upon Calmistry acknowledgement._',
+  ].join('\n');
+}
+
+test('compact submission validates title, item, amount, contact, address and explicit terms', () => {
+  const body = compactWebsiteBid('01', 'Alera Divider', 410);
+  expect(parseAuctionForm(body)).toMatchObject({lot:'01', amount:410, consent:true, name:'Example Guest'});
+  expect(parseAuctionForm(body.replace('Bid: S$410', 'Bid: S$500')))
+    .toMatchObject({lot:'01',amount:0,consent:false});
+  expect(parseAuctionForm(body.replace('Item: Alera Divider', 'Item: Another Divider')))
+    .toMatchObject({lot:'01',amount:0,consent:false});
+  expect(parseAuctionForm(body.replace('Data consent granted', 'Data consent withheld')))
+    .toMatchObject({lot:'01',consent:false});
+  expect(parseAuctionForm(body.replace('Delivery: 10 Example Road, Singapore 123456', 'Delivery:')))
+    .toMatchObject({lot:'01',consent:false});
+  expect(parseAuctionForm(body.replace('*Terms accepted*','*Terms not accepted*')))
+    .toMatchObject({lot:'01',consent:false});
+});
+
 test('parses new form terms and only explicit short follow-up syntax', () => {
   expect(parseAuctionForm(websiteBid('02', 1020))).toMatchObject({lot:'02',amount:1020,consent:true});
+  // Earlier website messages with both NEW BID title and legacy parser labels stay valid.
+  expect(parseAuctionForm('*NEW BID — Lot 02 · Example piece · S$1,020*\n\n'+websiteBid('02',1020)))
+    .toMatchObject({lot:'02',amount:1020,consent:true});
   expect(parseAuctionForm(websiteBid('02', 1020).replace('Payment and collection deadlines:', 'Payment deadline:')))
     .toMatchObject({consent:false});
   expect(parseAuctionFollowUp('Bid Lot 02: S$1120')).toMatchObject({lot:'02',amount:1120,followUp:true});
@@ -95,9 +131,9 @@ test('one stable private ID across lots, valid nonleading bids, outbid drafts an
       expect(notices).toHaveLength(7);
       expect(notices.every(n=>n.state==='draft')).toBe(true);
       expect(notices.filter(n=>n.kind==='outbid')).toHaveLength(2);
-      expect(notices.some(n=>/Your bidder number · 8\d{2}/.test(n.text))).toBe(true);
+      expect(notices.some(n=>/Bidder number: 8\d{2}/.test(n.text))).toBe(true);
       expect(notices.every(n=>!n.text.includes('Current highest bidder:'))).toBe(true);
-      expect(notices.some(n=>n.text.includes('You are not currently the highest bidder for Lot 02.'))).toBe(true);
+      expect(notices.some(n=>n.text.includes('Status: *Not currently highest*'))).toBe(true);
       expect(notices.every(n=>!n.text.includes('Example Guest')&&!n.text.includes('12345678'))).toBe(true);
       const summary = monitor.closingReport();
       expect(summary).toContain('Lot 02 — Noma Drinks Cabinet');
@@ -115,6 +151,36 @@ test('one stable private ID across lots, valid nonleading bids, outbid drafts an
   }
 });
 
+test('outbid notice shows own amount, new highest, stable private number and valid reply syntax', () => {
+  const dir=mkdtempSync(path.join(tmpdir(),'auction-outbid-copy-'));
+  const db=new Database(path.join(dir,'auction.sqlite'));
+  const fake=fakeBackend();
+  const registry=new AuctionBidderRegistry(db,fake.whatsapp,false);
+  try {
+    registry.registerBid({messageId:'a1',chatId:'650000051@s.whatsapp.net',lot:'01',
+      lotName:'Alera Divider',amount:410,at:Date.now(),verdict:'accepted'});
+    registry.registerBid({messageId:'b1',chatId:'650000052@s.whatsapp.net',lot:'01',
+      lotName:'Alera Divider',amount:500,at:Date.now(),verdict:'accepted',
+      previous:{chatId:'650000051@s.whatsapp.net',amount:410}});
+    const notices=db.prepare('SELECT kind,text,chat_id AS destination FROM auction_notices ORDER BY id')
+      .all() as Array<{kind:string;text:string;destination:string}>;
+    expect(notices).toHaveLength(3);
+    const outbid=notices.find(x=>x.kind==='outbid')!;
+    expect(outbid.destination).toBe('650000051@s.whatsapp.net');
+    expect(outbid.text).toContain('*OUTBID — Lot 01 · Alera Divider*');
+    expect(outbid.text).toContain('Your bid: S$410');
+    expect(outbid.text).toContain('New highest bid: *S$500*');
+    expect(outbid.text).toMatch(/Your bidder number: 8\d{2}/);
+    expect(outbid.text).toContain('Minimum next bid: S$510');
+    expect(outbid.text).toContain('Bid Lot 01: S$510');
+    expect(parseAuctionFollowUp('Bid Lot 01: S$510')).toMatchObject({lot:'01',amount:510});
+    expect(outbid.text).not.toContain('650000052');
+    expect(notices[1]!.text).toContain('*BID RECEIVED — Lot 01 · Alera Divider · S$500*');
+    expect(notices[1]!.text).toContain('Status: *Highest bid*');
+    expect(notices.every(x=>!x.text.includes('CALMISTRY — PRIVATE COLLECTION'))).toBe(true);
+  } finally { registry.stop(); db.close(); rmSync(dir,{recursive:true,force:true}); }
+});
+
 test('opted-in WhatsApp acknowledgement is private and marked sent only after receipt', async () => {
   const dir=mkdtempSync(path.join(tmpdir(),'calmistry-auction-notice-'));
   const db=new Database(path.join(dir,'auction.sqlite'));
@@ -127,8 +193,8 @@ test('opted-in WhatsApp acknowledgement is private and marked sent only after re
     await registry.flush();
     expect(fake.sent).toHaveLength(1);
     expect(fake.sent[0].to).toBe('650000007@s.whatsapp.net');
-    expect(fake.sent[0].text).toMatch(/Your bidder number · 8\d{2}/);
-    expect(fake.sent[0].text).toContain('You are currently the highest bidder');
+    expect(fake.sent[0].text).toMatch(/Bidder number: 8\d{2}/);
+    expect(fake.sent[0].text).toContain('Status: *Highest bid*');
     expect(registry.status().messagesSent).toBe(1);
     await registry.flush();
     expect(fake.sent).toHaveLength(1);

@@ -14,11 +14,11 @@ const START = Date.parse('2026-11-08T10:00:00+08:00');
 const END = Date.parse('2026-11-22T21:00:00+08:00');
 const OWNER_REPORT_GRACE = 5 * 60_000;
 const LOT_NAMES: Record<string,string> = Object.fromEntries([
-  'Alera Screen Divider','Noma Drinks Cabinet','Noma Cocktail Cabinet','Narana Divider',
+  'Alera Divider','Noma Drinks Cabinet','Noma Cocktail Cabinet','Narana Screen Divider',
   'Auru Wall Accent (Giraffe)','Avara Bar Stool','Taj Round Table','Luma Decorative Panel',
   'Varen Stool','Alera Coffee Table','Tanu Coffee Table','Senai Dining Chair',
   'Veya Dining Chair','Naro Dining Chair','Lione Armchair','Bonnie Coffee Table',
-  'Soma Trolley','Zianna Curves Stool','Auri Armchair','Lora Pendant 90cm',
+  'Soma Drinks Trolley','Zianna Curves Stool','Auri Armchair','Lora Pendant 90cm',
   'Avami Leaf Pendant - Grande','Talo Pendant','Lora Pendant 50cm','Velin Pendant',
   'Taro Headboard','Luma Mirror','Sona Pendant','Liora Headboard',
   'Maro Accent Stool','Auru Wall Accent (Lion)','Suri Pendant','Auru Wall Accent (Elephant)',
@@ -35,6 +35,31 @@ type Mode = 'preview' | 'live';
 interface ParsedBid { lot: string; amount: number; consent: boolean; followUp?: boolean; name?: string; }
 interface Prior { chatId: string; amount: number; }
 export function parseAuctionForm(body: string): ParsedBid | null {
+  // Compact WhatsApp bid form (8 Nov 2026). Accept only complete submissions:
+  // title, item, amount, identity, address and affirmative, unchanged terms.
+  // Older messages remain supported below for bids already in the WhatsApp history.
+  const compact = body.match(/^\*NEW BID\s*[—-]\s*Lot\s+(0[1-9]|[12][0-9]|3[0-4])\s*·\s*(.+?)\s*·\s*S\$\s*([0-9][0-9,]*)\*\s*$/mi);
+  // Legacy 8 Nov submissions also had the NEW BID title but retained the
+  // old CALMISTRY parser header. Continue to accept those in-flight messages.
+  if (compact && !/^CALMISTRY\s*[—-]\s*PRIVATE COLLECTION AUCTION\s*$/mi.test(body)) {
+    const item = body.match(/^Item:\s*(.+?)\s*\(Lot\s+(0[1-9]|[12][0-9]|3[0-4])\)\s*$/mi);
+    const amountField = body.match(/^Bid:\s*S\$\s*([0-9][0-9,]*)\s*$/mi);
+    const name = body.match(/^Name:\s*(.+?)\s*$/mi)?.[1]?.trim();
+    const phone = body.match(/^WhatsApp:\s*(\+[1-9]\d{7,14})\s*$/mi);
+    const delivery = body.match(/^Delivery:\s*(.+?)\s*$/mi)?.[1]?.trim();
+    const compactTerms = [
+      /^\*Terms accepted\*\s*$/mi,
+      /^_Bidding rules agreed · Bank transfer within 24h of closing if successful · Collection within 7 days if self-collecting · Data consent granted · Bid valid upon Calmistry acknowledgement\._\s*$/mi,
+    ].every(pattern => pattern.test(body));
+    const amount = Number(compact[3]!.replace(/,/g, ''));
+    const repeated = amountField ? Number(amountField[1]!.replace(/,/g, '')) : 0;
+    const coherent = item?.[2] === compact[1] &&
+      item?.[1]?.trim() === compact[2]?.trim() &&
+      Number.isSafeInteger(amount) && amount === repeated;
+    const consent = !!(coherent && name && name.length >= 2 && phone &&
+      delivery && delivery.length >= 15 && compactTerms);
+    return { lot: compact[1]!, amount: coherent ? amount : 0, consent, name };
+  }
   if (!/^CALMISTRY\s*[—-]\s*PRIVATE COLLECTION AUCTION\s*$/mi.test(body)) return null;
   const lot = body.match(/^Lot\s+(0[1-9]|[12][0-9]|3[0-4])\s*[—-]\s*[^\r\n]+$/mi);
   const bid = body.match(/^Bid:\s*SGD\s+([0-9][0-9,]*)\s*\(S\$\s*([0-9][0-9,]*)\)\s*$/mi);
@@ -153,7 +178,8 @@ export class AuctionSweepMonitor {
             this.db.prepare("INSERT OR IGNORE INTO outbid_drafts(lot,chat_id,replaced_by) VALUES (?,?,?)").run(b.lot,previous.chatId,m.id);
           }
           this.bidders.registerBid({ messageId:m.id, chatId:m.chatId!, lot:b.lot,
-            amount:b.amount, at, verdict:verdict==='accepted'?'accepted':'too_low', previous, name:b.name });
+            amount:b.amount, at, verdict:verdict==='accepted'?'accepted':'too_low', previous, name:b.name,
+            lotName:LOT_NAMES[b.lot] || 'Auction item' });
         })();
         return true;
       }
