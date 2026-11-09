@@ -731,7 +731,29 @@ export class BaileysService implements WhatsAppBackend {
     } else {
       buffer = Buffer.from(data, 'base64');
     }
-    return this.sendContent(to, this.mediaContent(buffer, mimeType, filename, caption));
+    // Auction invitation only: preserve the full pixel dimensions and use high-quality
+    // 4:4:4 JPEG compression when it is materially smaller than the original PNG.
+    // Other images and documents retain their original format unchanged.
+    let preparedMime = mimeType;
+    if (filename === 'invitation' && mimeType === 'image/png' && buffer.length > 650_000) {
+      try {
+        const { default: sharp } = await import('sharp');
+        const jpeg = await sharp(buffer).jpeg({
+          quality: 94,
+          chromaSubsampling: '4:4:4',
+          mozjpeg: true,
+        }).toBuffer();
+        if (jpeg.length < buffer.length * 0.8) {
+          log.info({ beforeBytes: buffer.length, afterBytes: jpeg.length },
+            'Compressed auction invitation for WhatsApp without resizing');
+          buffer = jpeg;
+          preparedMime = 'image/jpeg';
+        }
+      } catch (error) {
+        log.warn({ error }, 'Invitation compression unavailable; sending original');
+      }
+    }
+    return this.sendContent(to, this.mediaContent(buffer, preparedMime, filename, caption));
   }
 
   async sendVoiceNote(to: string, audioPath: string): Promise<SentMessage> {
