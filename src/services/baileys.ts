@@ -17,6 +17,7 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { fileTypeFromBuffer } from 'file-type';
 import { BaileysStore } from './baileys-store.js';
 import type {
@@ -119,6 +120,8 @@ export class BaileysService implements WhatsAppBackend {
   private readonly detachListeners: Array<() => void> = [];
   private readonly historyRequests = new Map<string, number>();
   private readonly historyInflight = new Map<string, Promise<void>>();
+  // Bounded prepared-image cache: reuse decoded bytes across auction invitations.
+  private readonly preparedImages = new Map<string, Buffer>();
 
   constructor(deps: BaileysServiceDeps = {}) {
     this.deps = deps;
@@ -709,7 +712,26 @@ export class BaileysService implements WhatsAppBackend {
 
   async sendMediaFromBase64(to: string, data: string, mimeType: string, filename?: string, caption?: string): Promise<SentMessage> {
     if (data.length > Math.ceil(MAX_MEDIA_BYTES / 3) * 4) throw new Error('Media exceeds the 64 MiB transfer limit.');
-    return this.sendContent(to, this.mediaContent(Buffer.from(data, 'base64'), mimeType, filename, caption));
+    let buffer: Buffer;
+    if (mimeType === 'image/png' || mimeType === 'image/jpeg') {
+      const key = createHash('sha256').update(data).digest('hex');
+      const cached = this.preparedImages.get(key);
+      if (cached) {
+        // Refresh LRU position so the most-used invitation stays ready.
+        this.preparedImages.delete(key);
+        this.preparedImages.set(key, cached);
+        buffer = cached;
+      } else {
+        buffer = Buffer.from(data, 'base64');
+        if (buffer.length <= 2 * 1024 * 1024) {
+          this.preparedImages.set(key, buffer);
+          while (this.preparedImages.size > 4) this.preparedImages.delete(this.preparedImages.keys().next().value!);
+        }
+      }
+    } else {
+      buffer = Buffer.from(data, 'base64');
+    }
+    return this.sendContent(to, this.mediaContent(buffer, mimeType, filename, caption));
   }
 
   async sendVoiceNote(to: string, audioPath: string): Promise<SentMessage> {
