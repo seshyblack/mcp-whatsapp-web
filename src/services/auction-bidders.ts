@@ -18,14 +18,6 @@ function sgd(amount: number): string {
   return 'S$' + amount.toLocaleString('en-SG');
 }
 
-/**
- * This register is stored inside the existing persistent Render auction SQLite
- * database. A bidder's identity is their verified incoming WhatsApp chat JID,
- * never the editable phone-number field in a website form.
- *
- * Outbound is a separate, opt-in switch. Drafts created while outbound is off
- * are NEVER promoted to pending automatically, even if outbound is later enabled.
- */
 export class AuctionBidderRegistry {
   private delivering = false;
   private drainRequested = false;
@@ -48,8 +40,6 @@ export class AuctionBidderRegistry {
     if (!columns.some(c => c.name === 'display_name')) {
       this.db.exec('ALTER TABLE auction_bidders ADD COLUMN display_name TEXT');
     }
-    // Keep internal autoincrement IDs; public numbers are a persistent random permutation.
-    // Existing rows are migrated once; no public number is ever reused.
     this.db.transaction(() => {
       const existing = this.db.prepare('SELECT id FROM auction_bidders WHERE public_number IS NULL ORDER BY id').all() as Array<{id:number}>;
       for (const row of existing) {
@@ -79,11 +69,6 @@ export class AuctionBidderRegistry {
     return bidderLabel(number);
   }
 
-  /**
-   * Called only for validated, live, registered bids after database insert.
-   * All writes should occur in the caller's SQLite transaction.
-   * Previously leading bidder receives a separate private outbid notification.
-   */
   registerBid(input: {
     messageId: string; chatId: string; lot: string; amount: number;
     at: number; verdict: Verdict; previous?: Leader; name?: string; lotName?: string; correction?: boolean;
@@ -91,7 +76,6 @@ export class AuctionBidderRegistry {
     const { messageId, chatId, lot, amount, at, verdict, previous, name } = input;
     const number = this.number(chatId, at, name);
     const previousNumber = previous ? this.number(previous.chatId, at) : undefined;
-    // Names are descriptive only; the canonical bidder identity is the incoming chat ID.
     const itemName = input.lotName?.replace(/[\r\n]/g, ' ').trim() || 'Item';
     const lotTitle = 'Lot ' + lot + ' · ' + itemName;
     const leading = verdict === 'accepted';
@@ -111,9 +95,6 @@ export class AuctionBidderRegistry {
           '. To bid again, reply: Bid Lot ' + lot + ': ' + (next === null ? 'S$[amount]' : sgd(next)) + ' (or higher)._',
     ].join('\n');
     this.queue('confirmation', chatId, messageId, text, at);
-
-    // Send the displaced highest bidder their own bid, the new highest bid and
-    // an executable follow-up message. Never disclose the competing bidder.
     if (leading && previous && previous.chatId !== chatId && previousNumber) {
       const nextBid = amount + MINIMUM_INCREMENT_SGD;
       const outbidText = [
@@ -133,37 +114,46 @@ export class AuctionBidderRegistry {
     return number;
   }
 
+  notifyRejectedBid(x: {messageId:string; chatId:string; lot:string; amount:number; at:number;
+    opening?:number; lotName?:string; reason:'details'|'amount'}):void {
+    const floor=x.opening;
+    const explanation=x.reason==='details'
+      ? 'Required bid details or terms are incomplete. Please submit the complete website form.'
+      : floor ? 'Opening bid: '+sgd(floor)+'. Please offer in S$10 increments using the website.'
+        : 'This lot cannot accept bids. Please check the auction website.';
+    this.queue('not_accepted',x.chatId,x.messageId,[
+      '*BID NOT RECORDED — Lot '+x.lot+' · '+(x.lotName||'Auction item')+'*',
+      '', 'Your offer: '+sgd(x.amount), 'Status: *Not accepted*', '',explanation,
+      '', '_No bid has been registered from this submission._'
+    ].join('\n'),x.at);
+  }
 
-  /** Give each identifiable auction submission its own explicit status. */
-  notifyRejectedBid(input: {
-    messageId: string; chatId: string; lot: string; amount: number; at: number;
-    opening?: number; lotName?: string; reason: 'details' | 'amount';
-  }): void {
-    const item = input.lot ? 'Lot ' + input.lot + ' · ' + (input.lotName || 'Auction item') : 'Auction submission';
-    const floor = Number.isSafeInteger(input.opening) && (input.opening ?? 0) > 0 ? input.opening! : null;
-    const explanation = input.reason === 'details'
-      ? 'The required details or accepted terms could not be verified. Please submit the complete bid form from the auction website again.'
-      : floor === null
-        ? 'This lot is not accepting bids. Please check the auction website.'
-        : 'The opening bid is ' + sgd(floor) + ', followed by S
-    // Never send stale historical messages or anything queued in preview.
+  notifyUnchangedBid(x:{messageId:string;chatId:string;lot:string;at:number;
+    recorded:number;leader?:Leader;lotName?:string}):void {
+    const number=this.number(x.chatId,x.at);
+    const leading=!x.leader||x.leader.chatId===x.chatId;
+    this.queue('unchanged',x.chatId,x.messageId,[
+      '*BID ALREADY RECORDED — Lot '+x.lot+' · '+(x.lotName||'Auction item')+'*',
+      '', 'Your recorded bid: '+sgd(x.recorded),'Bidder number: '+number,
+      leading ? 'Status: *Highest bid*' : 'Status: *Not currently highest*',
+      ...(!leading&&x.leader?['Current highest bid: *'+sgd(x.leader.amount)+'*']:[]),
+      '', '_This submission did not increase your recorded bid._'
+    ].join('\n'),x.at);
+  }
+
+  private queue(kind: NoticeKind, chatId: string, sourceMessageId: string, text: string, at: number): void {
     const fresh = at <= Date.now() + 60_000 && Date.now() - at <= 15 * 60_000;
     const state = this.outboundEnabled && fresh && Date.now() < AUCTION_CLOSE_AT ? 'pending' : 'draft';
     this.db.prepare('INSERT OR IGNORE INTO auction_notices(kind,chat_id,source_message_id,text,state,created_at) VALUES (?,?,?,?,?,?)')
       .run(kind, chatId, sourceMessageId, text, state, Date.now());
   }
 
-  /**
-   * Conservative at-most-once sending: mark "sending" before network I/O;
-   * if network reports a failure, retain as uncertain instead of retrying and
-   * risking duplicate WhatsApp messages.
-   */
   async flush(): Promise<void> {
     if (Date.now() >= AUCTION_CLOSE_AT) {
       this.db.prepare("UPDATE auction_notices SET state='expired' WHERE state='pending'").run();
       return;
     }
-    if (this.delivering) { this.drainRequested = true; return; }
+    if (this.delivering) { this.drainRequested=true; return; }
     if (this.stopped || !this.outboundEnabled || !this.whatsapp.isAuthenticated()) return;
     this.delivering = true;
     try {
@@ -189,113 +179,11 @@ export class AuctionBidderRegistry {
             .run(reason.slice(0,400),claim.id);
           log.error('Auction private acknowledgement delivery uncertain; no automatic retry', error);
         }
-        // Rate-limit sequential personal notices.
         if (i < 11 && !this.stopped) await new Promise(resolve=>setTimeout(resolve, 2500));
       }
     } finally {
       this.delivering = false;
-      // A newly queued notification can arrive just as the prior flush ends.
-      if (this.drainRequested && !this.stopped) {
-        this.drainRequested = false;
-        void this.flush();
-      }
-    }
-  }
-
-  stop(): void { this.stopped = true; }
-
-  status() {
-    const count = (sql:string) => (this.db.prepare(sql).get() as {n:number}).n;
-    return {
-      registeredBidders:count('SELECT COUNT(*) AS n FROM auction_bidders'),
-      noticeBreakdown:this.db.prepare('SELECT state,kind,COUNT(*) AS count FROM auction_notices GROUP BY state,kind ORDER BY state,kind').all(),
-      messagesSent:count("SELECT COUNT(*) AS n FROM auction_notices WHERE state='sent'"),
-      outboundEnabled:this.outboundEnabled,
-      note:'All notices are private to participating bidders. Drafts are not auto-sent. Uncertain sends require owner review.',
-    };
-  }
-}
- + MINIMUM_INCREMENT_SGD + ' increments. Please submit a valid amount from the auction website.';
-    this.queue('not_accepted', input.chatId, input.messageId, [
-      '*BID NOT RECORDED — ' + item + '*',
-      '',
-      ...(Number.isSafeInteger(input.amount) && input.amount > 0 ? ['Submitted: ' + sgd(input.amount)] : []),
-      'Status: *Not accepted*',
-      '',
-      explanation,
-      '',
-      '_No bid has been registered from this submission._',
-    ].join('\n'), input.at);
-  }
-
-  /** A repeated or lower personal bid cannot change the ledger, but still gets a reply. */
-  notifyUnchangedBid(input: {
-    messageId: string; chatId: string; lot: string; at: number;
-    recorded: number; leader?: Leader; lotName?: string;
-  }): void {
-    const number = this.number(input.chatId, input.at);
-    const leading = !input.leader || input.leader.chatId === input.chatId;
-    this.queue('unchanged', input.chatId, input.messageId, [
-      '*BID ALREADY RECORDED — Lot ' + input.lot + ' · ' + (input.lotName || 'Auction item') + '*',
-      '',
-      'Your recorded bid: ' + sgd(input.recorded),
-      'Bidder number: ' + number,
-      leading ? 'Status: *Highest bid*' : 'Status: *Not currently highest*',
-      ...(!leading && input.leader ? ['Current highest bid: *' + sgd(input.leader.amount) + '*'] : []),
-      '',
-      '_This submission did not increase your recorded bid._',
-    ].join('\n'), input.at);
-  }
-
-  private queue(kind: NoticeKind, chatId: string, sourceMessageId: string, text: string, at: number): void {
-    // Never send stale historical messages or anything queued in preview.
-    const fresh = at <= Date.now() + 60_000 && Date.now() - at <= 15 * 60_000;
-    const state = this.outboundEnabled && fresh && Date.now() < AUCTION_CLOSE_AT ? 'pending' : 'draft';
-    this.db.prepare('INSERT OR IGNORE INTO auction_notices(kind,chat_id,source_message_id,text,state,created_at) VALUES (?,?,?,?,?,?)')
-      .run(kind, chatId, sourceMessageId, text, state, Date.now());
-  }
-
-  /**
-   * Conservative at-most-once sending: mark "sending" before network I/O;
-   * if network reports a failure, retain as uncertain instead of retrying and
-   * risking duplicate WhatsApp messages.
-   */
-  async flush(): Promise<void> {
-    if (Date.now() >= AUCTION_CLOSE_AT) {
-      this.db.prepare("UPDATE auction_notices SET state='expired' WHERE state='pending'").run();
-      return;
-    }
-    if (this.delivering || this.stopped || !this.outboundEnabled ||
-      !this.whatsapp.isAuthenticated()) return;
-    this.delivering = true;
-    try {
-      for (let i=0; i<12 && !this.stopped; i++) {
-        const claim = this.db.transaction(() => {
-          const row = this.db.prepare("SELECT id, chat_id AS chatId, text FROM auction_notices WHERE state='pending' ORDER BY id LIMIT 1").get() as Notice | undefined;
-          if (!row) return undefined;
-          this.db.prepare("UPDATE auction_notices SET state='sending' WHERE id=? AND state='pending'").run(row.id);
-          return row;
-        })();
-        if (!claim) break;
-        try {
-          if (Date.now() >= AUCTION_CLOSE_AT) {
-            this.db.prepare("UPDATE auction_notices SET state='expired' WHERE id=? AND state='sending'").run(claim.id);
-            break;
-          }
-          const sent = await this.whatsapp.sendMessage(claim.chatId, claim.text);
-          this.db.prepare("UPDATE auction_notices SET state='sent',sent_message_id=? WHERE id=? AND state='sending'")
-            .run(sent.id,claim.id);
-        } catch (error) {
-          const reason = error instanceof Error ? error.message : String(error);
-          this.db.prepare("UPDATE auction_notices SET state='uncertain',error=? WHERE id=? AND state='sending'")
-            .run(reason.slice(0,400),claim.id);
-          log.error('Auction private acknowledgement delivery uncertain; no automatic retry', error);
-        }
-        // Rate-limit sequential personal notices.
-        if (i < 11 && !this.stopped) await new Promise(resolve=>setTimeout(resolve, 2500));
-      }
-    } finally {
-      this.delivering = false;
+      if(this.drainRequested&&!this.stopped) {this.drainRequested=false;void this.flush();}
     }
   }
 
