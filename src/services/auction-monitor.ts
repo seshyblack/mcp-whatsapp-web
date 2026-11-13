@@ -9,6 +9,57 @@ import { AuctionTestSandbox } from './auction-test-sandbox.js';
 import { removeKnownOpeningTestBids, isDeletedAuctionTestMessage } from './auction-test-cleanup.js';
 import { resetAuctionExcludingClairie, isExcludedAuctionSender } from './auction-exclusions.js';
 
+/** Confirmed owner request: cancel the Standard Avami offer from this one authenticated WhatsApp bidder.
+ * Keep a 'cancelled' ledger row for audit, and preserve the customer's Grande/Elephant bids.
+ * Both IDs were observed in the same verified incoming WhatsApp conversation.
+ */
+const SARAH_AUCTION_CHAT_IDS = ['601139700824@s.whatsapp.net', '184915723321535@lid'] as const;
+const isSarahAuctionChat = (id: string | null | undefined) => !!id &&
+  (SARAH_AUCTION_CHAT_IDS as readonly string[]).includes(id);
+
+/** A once-safe cancellation that also reassigns the Lot 34 lead to the next genuine bidder. */
+export function applySarahStandardCancellation(db: Database.Database): {
+  cancelled: number; lot32Status: 'highest' | 'not_highest' | 'not_recorded';
+  lot32Highest: number | null; lot34RemainingHighest: number | null;
+} {
+  const ids = [...SARAH_AUCTION_CHAT_IDS];
+  const placeholders = ids.map(() => '?').join(',');
+  return db.transaction(() => {
+    const change = db.prepare("UPDATE monitored_bids SET verdict='cancelled' "+
+      "WHERE lot='34' AND mode='live' AND verdict!='cancelled' AND chat_id IN (" + placeholders + ")")
+      .run(...ids);
+    // No further pending system confirmations/outbid alerts may contradict this cancellation.
+    db.prepare("UPDATE auction_notices SET state='expired' WHERE state='pending' "+
+      "AND ((chat_id IN (" + placeholders + ") AND text LIKE '%Lot 34%') "+
+      "OR source_message_id IN (SELECT message_id FROM monitored_bids "+
+      "WHERE lot='34' AND verdict='cancelled' AND chat_id IN (" + placeholders + ")))")
+      .run(...ids, ...ids);
+    db.prepare("UPDATE outbid_drafts SET status='cancelled' WHERE lot='34' AND chat_id IN (" + placeholders + ")")
+      .run(...ids);
+    const highest34=db.prepare("SELECT message_id AS id, amount, verdict FROM monitored_bids "+
+      "WHERE lot='34' AND mode='live' AND verdict IN ('accepted','registered_not_leading') "+
+      "ORDER BY amount DESC,received_at ASC LIMIT 1").get() as
+      {id:string;amount:number;verdict:string}|undefined;
+    if(highest34?.verdict==='registered_not_leading') {
+      db.prepare("UPDATE monitored_bids SET verdict='accepted' WHERE message_id=?").run(highest34.id);
+    }
+    const highest32=db.prepare("SELECT chat_id AS chatId, amount FROM monitored_bids "+
+      "WHERE lot='32' AND mode='live' AND verdict IN ('accepted','registered_not_leading') "+
+      "ORDER BY amount DESC,received_at ASC LIMIT 1").get() as
+      {chatId:string;amount:number}|undefined;
+    const sarah32=db.prepare("SELECT COUNT(*) AS n FROM monitored_bids WHERE lot='32' "+
+      "AND mode='live' AND verdict IN ('accepted','registered_not_leading') "+
+      "AND chat_id IN (" + placeholders + ")").get(...ids) as {n:number};
+    return {
+      cancelled:change.changes,
+      lot32Status:!sarah32.n ? 'not_recorded' :
+        highest32 && isSarahAuctionChat(highest32.chatId) ? 'highest' : 'not_highest',
+      lot32Highest:highest32?.amount??null,
+      lot34RemainingHighest:highest34?.amount??null
+    };
+  })();
+}
+
 const TWO_MINUTES = 120_000;
 const START = Date.parse('2026-11-08T10:00:00+08:00');
 const END = Date.parse('2026-11-22T21:00:00+08:00');
@@ -118,6 +169,9 @@ export class AuctionSweepMonitor {
     if (this.mode === 'live') {
       removeKnownOpeningTestBids(this.db);
       resetAuctionExcludingClairie(this.db, OPENINGS['01']);
+      const cancelled = applySarahStandardCancellation(this.db);
+      // Owner-visible operational audit, without bidder contact information.
+      log.warn('Calmistry authorized Lot 34 cancellation / Lot 32 verification: ' + JSON.stringify(cancelled));
     }
   }
   start(): void {
@@ -152,6 +206,8 @@ export class AuctionSweepMonitor {
     if(this.mode==='preview' && this.tests.record(m,parseAuctionForm,OPENINGS)) return true;
     const b=parseAuctionForm(m.body) ?? parseAuctionFollowUp(m.body);
     if(!b || !m.id || !Number.isFinite(m.timestamp)) return false;
+    // Prevent the original cancelled Standard bid from being re-imported by a history sweep.
+    if(this.mode==='live' && b.lot==='34' && isSarahAuctionChat(m.chatId)) return false;
     if(b.followUp && !this.db.prepare('SELECT 1 FROM auction_bidders WHERE chat_id=?').get(m.chatId)) return false;
     const at=m.timestamp*1000;
     const opening=OPENINGS[b.lot];

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { AuctionBidderRegistry } from '../src/services/auction-bidders.js';
-import { AuctionSweepMonitor, parseAuctionFollowUp, parseAuctionForm } from '../src/services/auction-monitor.js';
+import { AuctionSweepMonitor, applySarahStandardCancellation, parseAuctionFollowUp, parseAuctionForm } from '../src/services/auction-monitor.js';
 import type { SimpleMessage, WhatsAppBackend } from '../src/services/backend.js';
 
 const eventAt = Math.floor(Date.parse('2026-11-09T11:00:00+08:00') / 1000);
@@ -357,4 +357,42 @@ test('a complete formerly invalid bid can be reconciled once without duplicate r
       expect(notices[0]!.text).toContain('BID CORRECTED');
     }finally{db.close();}
   }finally{monitor.stop();rmSync(dir,{recursive:true,force:true});}
+});
+
+test('owner-authorized Standard Avami cancellation keeps other Sarah bids and prevents old-bid replay', () => {
+  const dir=mkdtempSync(path.join(tmpdir(),'calmistry-sarah-cancel-'));
+  const dbPath=path.join(dir,'auction.sqlite');
+  const fake=fakeBackend();
+  const monitor=new AuctionSweepMonitor(fake.whatsapp,dbPath,'live',false);
+  const sarah='601139700824@s.whatsapp.net', other='650000099@s.whatsapp.net';
+  try {
+    monitor.start();
+    fake.send(inbound('sarah21',sarah,compactWebsiteBid('21','Avami Leaf Pendant - Grande',260)));
+    fake.send(inbound('sarah32',sarah,compactWebsiteBid('32','Auru Wall Accent (Elephant)',130)));
+    const db=new Database(dbPath);
+    try {
+      db.prepare('INSERT INTO monitored_bids (message_id,chat_id,lot,amount,received_at,mode,verdict) VALUES (?,?,?,?,?,?,?)')
+        .run('sarah34',sarah,'34',220,eventAt*1000,'live','accepted');
+      db.prepare('INSERT INTO monitored_bids (message_id,chat_id,lot,amount,received_at,mode,verdict) VALUES (?,?,?,?,?,?,?)')
+        .run('other34',other,'34',220,(eventAt+1)*1000,'live','registered_not_leading');
+      const result=applySarahStandardCancellation(db);
+      expect(result).toMatchObject({cancelled:1,lot32Status:'highest',lot32Highest:130,lot34RemainingHighest:220});
+      expect(db.prepare("SELECT verdict FROM monitored_bids WHERE message_id='sarah34'").get())
+        .toEqual({verdict:'cancelled'});
+      expect(db.prepare("SELECT verdict FROM monitored_bids WHERE message_id='other34'").get())
+        .toEqual({verdict:'accepted'});
+      expect(db.prepare("SELECT verdict FROM monitored_bids WHERE message_id='sarah21'").get())
+        .toEqual({verdict:'accepted'});
+      expect(db.prepare("SELECT verdict FROM monitored_bids WHERE message_id='sarah32'").get())
+        .toEqual({verdict:'accepted'});
+      // A new sweep cannot bring back the original cancelled bid.
+      fake.send(inbound('sarah34',sarah,compactWebsiteBid('34','Avami Leaf Pendant',220)));
+      expect(db.prepare("SELECT verdict FROM monitored_bids WHERE message_id='sarah34'").get())
+        .toEqual({verdict:'cancelled'});
+      const again=applySarahStandardCancellation(db);
+      expect(again.cancelled).toBe(0);
+      fake.send(inbound('higher32',other,compactWebsiteBid('32','Auru Wall Accent (Elephant)',140)));
+      expect(applySarahStandardCancellation(db).lot32Status).toBe('not_highest');
+    } finally {db.close();}
+  } finally {monitor.stop();rmSync(dir,{recursive:true,force:true});}
 });
