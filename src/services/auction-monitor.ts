@@ -25,11 +25,11 @@ const LOT_NAMES: Record<string,string> = Object.fromEntries([
   'Veyana Screen Divider','Avami Leaf Pendant',
 ].map((name,i)=>[String(i+1).padStart(2,'0'),name]));
 export const OPENINGS: Readonly<Record<string, number>> = {
-  '01':410,'02':1020,'03':1040,'04':350,'05':140,'06':360,'07':760,
-  '08':190,'09':70,'10':410,'11':190,'12':230,'13':90,'14':80,
-  '15':270,'16':290,'17':330,'18':120,'19':140,'20':130,'21':240,
-  '22':90,'23':80,'24':70,'25':160,'26':80,'27':50,'28':120,
-  '29':100,'30':140,'31':170,'32':140,'33':390,'34':230
+  '01':400,'02':950,'03':1010,'04':430,'05':130,'06':350,'07':830,
+  '08':210,'09':80,'10':310,'11':220,'12':210,'13':140,'14':130,
+  '15':230,'16':270,'17':320,'18':100,'19':210,'20':150,'21':250,
+  '22':80,'23':90,'24':80,'25':170,'26':90,'27':60,'28':140,
+  '29':110,'30':130,'31':170,'32':130,'33':400,'34':220
 };
 type Mode = 'preview' | 'live';
 interface ParsedBid { lot: string; amount: number; consent: boolean; followUp?: boolean; name?: string; }
@@ -153,23 +153,44 @@ export class AuctionSweepMonitor {
     const b=parseAuctionForm(m.body) ?? parseAuctionFollowUp(m.body);
     if(!b || !m.id || !Number.isFinite(m.timestamp)) return false;
     if(b.followUp && !this.db.prepare('SELECT 1 FROM auction_bidders WHERE chat_id=?').get(m.chatId)) return false;
-    if(this.db.prepare('SELECT 1 FROM monitored_bids WHERE message_id=?').get(m.id)) return false;
     const at=m.timestamp*1000;
     const opening=OPENINGS[b.lot];
+    const oldBid=this.db.prepare('SELECT verdict FROM monitored_bids WHERE message_id=?')
+      .get(m.id) as {verdict:string}|undefined;
+    // Only replay a formerly rejected COMPLETE bid if it passes the corrected
+    // opening price. This is keyed on source message ID, never on customer alone.
+    const correctedInvalid=this.mode==='live' && oldBid?.verdict==='invalid' &&
+      b.consent && validAuctionBidAmount(opening,b.amount) && at>=START && at<END;
+    if(oldBid && !correctedInvalid) return false;
+    if(correctedInvalid) {
+      this.db.prepare("DELETE FROM monitored_bids WHERE message_id=? AND verdict='invalid'").run(m.id);
+    }
     let verdict='preview';
     if(this.mode==='live'){
       if(at<START||at>=END) verdict='closed';
-      else if(!b.consent||!validAuctionBidAmount(opening,b.amount)) verdict='invalid';
+      else if(!b.consent||!validAuctionBidAmount(opening,b.amount)) {
+        this.db.transaction(()=>{
+          this.db.prepare('INSERT INTO monitored_bids(message_id,chat_id,lot,amount,received_at,mode,verdict) VALUES (?,?,?,?,?,?,?)')
+            .run(m.id,m.chatId,b.lot,b.amount,at,this.mode,'invalid');
+          this.bidders.notifyRejectedBid({messageId:m.id,chatId:m.chatId!,lot:b.lot,amount:b.amount,at,
+            opening,lotName:LOT_NAMES[b.lot],reason:!b.consent?'details':'amount'});
+        })();
+        return true;
+      }
       else{
+        const previous=this.db.prepare("SELECT chat_id AS chatId,amount FROM monitored_bids WHERE lot=? AND mode='live' AND verdict='accepted' ORDER BY amount DESC,received_at ASC LIMIT 1")
+          .get(b.lot) as Prior|undefined;
         const own=this.db.prepare("SELECT MAX(amount) AS amount FROM monitored_bids WHERE lot=? AND chat_id=? AND mode='live' AND verdict IN ('accepted','registered_not_leading')")
           .get(b.lot,m.chatId) as { amount:number|null };
         if(own.amount!==null && b.amount<=own.amount) {
-          this.db.prepare('INSERT INTO monitored_bids(message_id,chat_id,lot,amount,received_at,mode,verdict) VALUES (?,?,?,?,?,?,?)')
-            .run(m.id,m.chatId,b.lot,b.amount,at,this.mode,'duplicate_or_lower');
+          this.db.transaction(()=>{
+            this.db.prepare('INSERT INTO monitored_bids(message_id,chat_id,lot,amount,received_at,mode,verdict) VALUES (?,?,?,?,?,?,?)')
+              .run(m.id,m.chatId,b.lot,b.amount,at,this.mode,'duplicate_or_lower');
+            this.bidders.notifyUnchangedBid({messageId:m.id,chatId:m.chatId!,lot:b.lot,
+              at,recorded:own.amount!,leader:previous,lotName:LOT_NAMES[b.lot]});
+          })();
           return true;
         }
-        const previous=this.db.prepare("SELECT chat_id AS chatId,amount FROM monitored_bids WHERE lot=? AND mode='live' AND verdict='accepted' ORDER BY amount DESC,received_at ASC LIMIT 1")
-          .get(b.lot) as Prior|undefined;
         verdict=previous && b.amount<=previous.amount ? 'registered_not_leading' : 'accepted';
         this.db.transaction(() => {
           this.db.prepare('INSERT INTO monitored_bids(message_id,chat_id,lot,amount,received_at,mode,verdict) VALUES (?,?,?,?,?,?,?)')
@@ -179,7 +200,7 @@ export class AuctionSweepMonitor {
           }
           this.bidders.registerBid({ messageId:m.id, chatId:m.chatId!, lot:b.lot,
             amount:b.amount, at, verdict:verdict==='accepted'?'accepted':'too_low', previous, name:b.name,
-            lotName:LOT_NAMES[b.lot] || 'Auction item' });
+            lotName:LOT_NAMES[b.lot] || 'Auction item',correction:correctedInvalid });
         })();
         return true;
       }
@@ -196,7 +217,12 @@ export class AuctionSweepMonitor {
     try{
       if(!this.whatsapp.isAuthenticated()) throw new Error('WhatsApp connection is offline');
       const last=Number(this.state('last_success_ms')||0);
-      const since=Math.max(now-24*3600_000,last?last-10*60_000:now-3600_000);
+      // After price reconciliation, recheck recent messages that may have been
+      // rejected under stale opening bids, without re-notifying valid old bids.
+      const revision='website-opening-bids-2026-11-09';
+      const recheckPrices=this.mode==='live' && this.state('opening_prices_revision')!==revision;
+      const since=recheckPrices ? Math.max(START,now-24*3600_000)
+        : Math.max(now-24*3600_000,last?last-10*60_000:now-3600_000);
       const chats=await this.whatsapp.listChats(1000,false);
       const recent=chats.filter(c=>!c.isGroup && /^\d+@(s\.whatsapp\.net|lid)$/.test(c.id) && c.timestamp*1000>=since);
       if(recent.length>150) partial=true;
@@ -216,7 +242,10 @@ export class AuctionSweepMonitor {
           !partial) await this.sendOwnerReport();
       this.setState('last_check_ms',String(Date.now()));
       this.setState('coverage',partial?'partial':'complete');
-      if(!partial) this.setState('last_success_ms',String(now));
+      if(!partial) {
+        this.setState('last_success_ms',String(now));
+        if(recheckPrices) this.setState('opening_prices_revision',revision);
+      }
       this.error='';
       log.info('Auction monitor sweep '+JSON.stringify({mode:this.mode,inspected,newBids,partial,sent:0}));
     }catch(e){

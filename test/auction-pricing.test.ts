@@ -36,59 +36,60 @@ function websiteBid(lot: string, amount: number): string {
   ].join('\n');
 }
 
-test('WhatsApp auction and website use identical opening bids for all 34 lots', () => {
+test('WhatsApp auction opening bids match the published approved 9 Nov values for all 34 lots', () => {
+  // Snapshot of the published website approvedOpeningBids. Update both together.
   expect(OPENINGS).toEqual({
-  "10": 410,
-  "11": 190,
-  "12": 230,
-  "13": 90,
-  "14": 80,
-  "15": 270,
-  "16": 290,
-  "17": 330,
-  "18": 120,
-  "19": 140,
-  "20": 130,
-  "21": 240,
-  "22": 90,
-  "23": 80,
-  "24": 70,
-  "25": 160,
-  "26": 80,
-  "27": 50,
-  "28": 120,
-  "29": 100,
-  "30": 140,
-  "31": 170,
-  "32": 140,
-  "33": 390,
-  "34": 230,
-  "01": 410,
-  "02": 1020,
-  "03": 1040,
-  "04": 350,
-  "05": 140,
-  "06": 360,
-  "07": 760,
-  "08": 190,
-  "09": 70
-});
+    '01': 400,
+    '02': 950,
+    '03': 1010,
+    '04': 430,
+    '05': 130,
+    '06': 350,
+    '07': 830,
+    '08': 210,
+    '09': 80,
+    '10': 310,
+    '11': 220,
+    '12': 210,
+    '13': 140,
+    '14': 130,
+    '15': 230,
+    '16': 270,
+    '17': 320,
+    '18': 100,
+    '19': 210,
+    '20': 150,
+    '21': 250,
+    '22': 80,
+    '23': 90,
+    '24': 80,
+    '25': 170,
+    '26': 90,
+    '27': 60,
+    '28': 140,
+    '29': 110,
+    '30': 130,
+    '31': 170,
+    '32': 130,
+    '33': 400,
+    '34': 220,
+  });
 });
 
 test('Lot 34 valid website bid and follow-up are parsed without admitting nonexistent Lot 35', () => {
-  expect(parseAuctionForm(websiteBid('34', 230))).toMatchObject({lot:'34',amount:230,consent:true});
+  expect(parseAuctionForm(websiteBid('34', 220))).toMatchObject({lot:'34',amount:230,consent:true});
   expect(parseAuctionFollowUp('Bid Lot 34: S$240')).toMatchObject({lot:'34',amount:240,followUp:true});
   expect(validAuctionBidAmount(OPENINGS['34'],230)).toBe(true);
   expect(validAuctionBidAmount(OPENINGS['34'],240)).toBe(true);
-  expect(validAuctionBidAmount(OPENINGS['34'],220)).toBe(false);
-  expect(validAuctionBidAmount(OPENINGS['34'],235)).toBe(false);
+  expect(validAuctionBidAmount(OPENINGS['34'],220)).toBe(true);
+  expect(validAuctionBidAmount(OPENINGS['34'],225)).toBe(false);
   expect(parseAuctionFollowUp('Bid Lot 35: S$160')).toBeNull();
-  expect(parseAuctionForm(websiteBid('35',230))?.lot).not.toBe('35');
-  expect(parseAuctionForm(websiteBid('34',230).replace('CALMISTRY — PRIVATE COLLECTION AUCTION','CALMISTRY AUCTION — TEST MESSAGE (NOT A BID)'))).toBeNull();
+  expect(parseAuctionForm(websiteBid('35',220))?.lot).not.toBe('35');
+  expect(parseAuctionForm(websiteBid('34',220).replace('CALMISTRY — PRIVATE COLLECTION AUCTION','CALMISTRY AUCTION — TEST MESSAGE (NOT A BID)'))).toBeNull();
 });
 
 test('screen divider opening bids are protected at the new minimums', () => {
-  for (const [lot, opening] of [['01', 410], ['04', 350], ['33', 390]] as const) {
+  for (const [lot, opening] of [['01', 400], ['04', 430], ['33', 400]] as const) {
     expect(OPENINGS[lot]).toBe(opening);
     expect(validAuctionBidAmount(OPENINGS[lot], opening)).toBe(true);
     expect(validAuctionBidAmount(OPENINGS[lot], opening + 10)).toBe(true);
