@@ -174,6 +174,35 @@ export class AuctionSweepMonitor {
       const cancelled = applySarahStandardCancellation(this.db);
       // Owner-visible operational audit, without bidder contact information.
       log.warn('Calmistry authorized Lot 34 cancellation / Lot 32 verification: ' + JSON.stringify(cancelled));
+      // Read-only owner diagnostic for Kerry's unacknowledged Talo bid.
+      // Never log her identifiers, contacts, delivery details or message body.
+      const taloTop = this.db.prepare(
+        "SELECT chat_id AS chatId,amount FROM monitored_bids WHERE lot='22' AND mode='live' "+
+        "AND verdict IN ('accepted','registered_not_leading') "+
+        "ORDER BY amount DESC,received_at ASC LIMIT 1",
+      ).get() as {chatId:string;amount:number}|undefined;
+      const taloBuyerIds = ['60173777621@s.whatsapp.net','222467025072189@lid'];
+      const taloBuyer = this.db.prepare(
+        "SELECT amount,verdict FROM monitored_bids WHERE lot='22' AND mode='live' "+
+        "AND chat_id IN (?,?) ORDER BY received_at DESC LIMIT 1",
+      ).get(...taloBuyerIds) as {amount:number;verdict:string}|undefined;
+      const taloNotices = this.db.prepare(
+        "SELECT state,kind,COUNT(*) AS count FROM auction_notices WHERE "+
+        "chat_id IN (?,?) AND text LIKE '%Lot 22%' GROUP BY state,kind",
+      ).all(...taloBuyerIds) as Array<{state:string;kind:string;count:number}>;
+      const taloNumber = this.db.prepare(
+        "SELECT public_number AS number FROM auction_bidders WHERE chat_id IN (?,?) LIMIT 1",
+      ).get(...taloBuyerIds) as {number:number}|undefined;
+      log.warn('Calmistry owner-requested Talo Lot 22 notification audit: '+
+        JSON.stringify({
+          bidderRegistered:!!taloBuyer,
+          recordedAmount:taloBuyer?.amount??null,
+          recordedVerdict:taloBuyer?.verdict??null,
+          bidderNumber:taloNumber?.number??null,
+          leadingAmount:taloTop?.amount??null,
+          bidderIsHighest:!!taloTop&&taloBuyerIds.includes(taloTop.chatId),
+          notices:taloNotices,
+        }));
     }
   }
   start(): void {
