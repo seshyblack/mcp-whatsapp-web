@@ -326,8 +326,7 @@ test('each below-opening bid gets a private rejection with its own lot-specific 
     fake.send(inbound('low34',guest,compactWebsiteBid('34','Avami Leaf Pendant',210)));
     const db=new Database(dbPath,{readonly:true});
     try {
-      const notices=db.prepare('SELECT kind,text FROM auction_notices WHERE chat_id=? ORDER BY id').all(guest)
-        as Array<{kind:string;text:string}>;
+      const notices=db.prepare('SELECT kind,text FROM auction_notices WHERE chat_id=? ORDER BY id').all(guest) as Array<{kind:string;text:string}>;
       expect(notices).toHaveLength(2);
       expect(notices.every(n=>n.kind==='not_accepted')).toBe(true);
       expect(notices[0]!.text).toContain('S$130');
