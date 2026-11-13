@@ -50,10 +50,12 @@ export function applySarahStandardCancellation(db: Database.Database): {
     const sarah32=db.prepare("SELECT COUNT(*) AS n FROM monitored_bids WHERE lot='32' "+
       "AND mode='live' AND verdict IN ('accepted','registered_not_leading') "+
       "AND chat_id IN (" + placeholders + ")").get(...ids) as {n:number};
+    const lot32Status: 'highest' | 'not_highest' | 'not_recorded' =
+      !sarah32.n ? 'not_recorded' :
+        highest32 && isSarahAuctionChat(highest32.chatId) ? 'highest' : 'not_highest';
     return {
       cancelled:change.changes,
-      lot32Status:!sarah32.n ? 'not_recorded' :
-        highest32 && isSarahAuctionChat(highest32.chatId) ? 'highest' : 'not_highest',
+      lot32Status,
       lot32Highest:highest32?.amount??null,
       lot34RemainingHighest:highest34?.amount??null
     };
