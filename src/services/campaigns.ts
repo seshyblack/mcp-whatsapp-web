@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { WhatsAppBackend, SimpleContact } from './backend.js';
 
@@ -59,6 +59,37 @@ export class CampaignStore {
     const dir = openSync(path.dirname(this.file), 'r');
     try { fsyncSync(dir); } finally { closeSync(dir); }
   }
+  /** Called only after this process successfully establishes exclusive WhatsApp session ownership. */
+  recoverAbandonedLock(): { recovered: boolean; uncertainDrafts: number } {
+    const lock = `${this.file}.sending.lock`;
+    if (!existsSync(lock)) return { recovered: false, uncertainDrafts: 0 };
+    const before = statSync(lock);
+    if (Date.now() - before.mtimeMs < 120_000) {
+      throw new Error('Campaign lock is recent; refusing recovery.');
+    }
+    const state = this.read();
+    const interrupted = Object.values(state.drafts).filter(d => d.status === 'sending');
+    const stamp = `${Date.now()}-${randomUUID()}`;
+    const backup = `${this.file}.pre-recovery-${stamp}.bak`;
+    copyFileSync(this.file, backup, constants.COPYFILE_EXCL);
+    const backupFd = openSync(backup, 'r');
+    try { fsyncSync(backupFd); } finally { closeSync(backupFd); }
+    const current = statSync(lock);
+    if (current.ino !== before.ino || current.mtimeMs !== before.mtimeMs) {
+      throw new Error('Campaign lock changed during recovery.');
+    }
+    if (interrupted.length) {
+      for (const draft of interrupted) draft.status = 'uncertain';
+      this.save(state);
+    }
+    const final = statSync(lock);
+    if (final.ino !== before.ino || final.mtimeMs !== before.mtimeMs) {
+      throw new Error('Campaign lock changed after journal backup.');
+    }
+    renameSync(lock, `${lock}.recovered-${stamp}`);
+    return { recovered: true, uncertainDrafts: interrupted.length };
+  }
+
   get(id: string): Draft {
     const draft = this.read().drafts[id];
     if (!draft) throw new Error('Unknown draft.');

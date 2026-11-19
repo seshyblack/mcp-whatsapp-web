@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { CampaignStore, selectCandidates, redactDraft } from '../src/services/campaigns.ts';
@@ -72,6 +72,30 @@ test('uncertain network outcome is durable and cannot be automatically retried',
   assert.equal(restored.contacted(recipient.id), true);
   await assert.rejects(restored.execute(d.id, backend(), async () => {}));
 });
+test('orphan campaign lock is archived and interrupted sends remain uncertain', t => {
+  const { store, file } = fixture(t);
+  const draft = store.create(rules, [recipient]);
+  approve(store, draft);
+  const state = JSON.parse(readFileSync(file, 'utf8'));
+  state.drafts[draft.id].status = 'sending';
+  writeFileSync(file, JSON.stringify(state));
+  const lock = `${file}.sending.lock`;
+  writeFileSync(lock, '');
+  const old = new Date(Date.now() - 300_000);
+  utimesSync(lock, old, old);
+  assert.deepEqual(store.recoverAbandonedLock(), { recovered: true, uncertainDrafts: 1 });
+  assert.equal(store.get(draft.id).status, 'uncertain');
+  assert.equal(store.contacted(recipient.id), true);
+  assert.equal(readdirSync(path.dirname(file)).filter(n => n.includes('pre-recovery-')).length, 1);
+  assert.equal(readdirSync(path.dirname(file)).filter(n => n.includes('.sending.lock.recovered-')).length, 1);
+});
+test('recent campaign lock is never removed', t => {
+  const { store, file } = fixture(t);
+  writeFileSync(`${file}.sending.lock`, '');
+  assert.throws(() => store.recoverAbandonedLock(), /recent/);
+  assert.equal(readdirSync(path.dirname(file)).filter(n => n.includes('pre-recovery-')).length, 0);
+});
+
 test('concurrent executions cannot send twice', async t => {
   const { store } = fixture(t);
   const d = store.create(rules, [recipient]); approve(store, d);

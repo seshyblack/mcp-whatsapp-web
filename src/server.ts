@@ -137,6 +137,13 @@ export class WhatsAppMcpServer {
 
           // Initialize the WhatsApp client
           await this.whatsapp.initialize();
+          try {
+            await this.whatsapp.ensureReady(30_000);
+            const recovery = this.campaigns.recoverAbandonedLock();
+            if (recovery.recovered) log.warn(`Recovered stale campaign lock; ${recovery.uncertainDrafts} interrupted drafts quarantined without resending.`);
+          } catch (error) {
+            log.warn('Campaign recovery deferred: ' + (error instanceof Error ? error.message : String(error)));
+          }
           log.info('WhatsApp client initialized successfully.');
           return;
         } catch (error) {
