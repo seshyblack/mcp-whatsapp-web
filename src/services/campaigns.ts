@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { closeSync, constants, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import type { WhatsAppBackend, SimpleContact } from './backend.js';
+import type { WhatsAppBackend, SimpleContact, GroupMember } from './backend.js';
 
 export type Step = { kind: 'text'; text: string } | { kind: 'image'; base64: string; mime: 'image/png' | 'image/jpeg'; caption?: string };
 export interface Recipient { id: string; displayName: string; steps: Step[] }
@@ -177,66 +177,90 @@ export class CampaignStore {
   }
 }
 
-export async function selectCandidates(backend: WhatsAppBackend, _store: CampaignStore, rules: Rules, count: number) {
+
+const isMeaningfulDirectMessage = (msg: { type: string; body: string; hasMedia: boolean }): boolean => {
+  const type = (msg.type || '').toLowerCase();
+  if (['unknown', 'protocol', 'placeholder', 'secretencrypted'].includes(type)) return false;
+  return Boolean((msg.body || '').trim() || msg.hasMedia || [
+    'chat', 'image', 'video', 'audio', 'ptt', 'document', 'sticker',
+    'reaction', 'call_log', 'template', 'interactive',
+  ].includes(type));
+};
+
+function memberDisplay(m: GroupMember): { displayName: string; firstName: string } {
+  const name = contactName(m.contact);
+  const number = m.contact?.number || canonical(m.id).split('@')[0]!;
+  return { displayName: name || '+' + number, firstName: name?.split(/\s+/)[0] || '' };
+}
+
+async function memberRejectionReason(
+  backend: WhatsAppBackend, store: CampaignStore, m: GroupMember,
+): Promise<string | null> {
+  const id = canonical(m.id);
+  if (!m.identityResolved || !/^\d+@s\.whatsapp\.net$/.test(id)) return 'unresolved_identity';
+  if (m.contact?.isMe === true || m.contact?.isUser === false) return 'not_another_user';
+  // A missing/unknown contact record is normal for an unsaved group member.
+  // Only positively identified saved contacts are excluded.
+  if (m.contact?.isMyContact === true || m.contact?.savedStatus === 'saved') return 'already_in_contacts';
+  if (store.contacted(id)) return 'prior_campaign_outreach';
+  const messages = await backend.getMessages(id, 1000);
+  if (messages.some(isMeaningfulDirectMessage)) return 'prior_direct_interaction';
+  return null;
+}
+
+/** Recheck the exact recipients, not just the first 25 proposed candidates. */
+export async function verifyCampaignRecipients(
+  backend: WhatsAppBackend, store: CampaignStore, rules: Rules,
+  recipients: Array<Pick<Recipient, 'id' | 'displayName'>>,
+): Promise<void> {
+  if (!backend.getGroupMembers) throw new Error('Backend does not expose group participants.');
+  const status = backend.getStatus();
+  if (!status.authenticated || status.history.state !== 'available') {
+    throw new Error('Wait for authentication and history synchronization.');
+  }
+  const members = await backend.getGroupMembers(rules.sourceGroup);
+  const byId = new Map(members.map(m => [canonical(m.id), m]));
+  for (const recipient of recipients) {
+    const m = byId.get(canonical(recipient.id));
+    if (!m) throw new Error('Recipient not in source group: ' + recipient.id);
+    const reason = await memberRejectionReason(backend, store, m);
+    if (reason) throw new Error('Recipient ineligible (' + reason + '): ' + recipient.id);
+    if (memberDisplay(m).displayName !== recipient.displayName) {
+      throw new Error('Recipient display name changed: ' + recipient.id);
+    }
+  }
+}
+
+export async function selectCandidates(backend: WhatsAppBackend, store: CampaignStore, rules: Rules, count: number) {
   if (!backend.getGroupMembers) throw new Error('Backend does not expose group participants.');
   if (!Number.isInteger(count) || count < 1 || count > 25) throw new Error('Choose 1–25 recipients.');
   const status = backend.getStatus();
   if (!status.authenticated || status.history.state !== 'available') throw new Error('Wait for authentication and history synchronization.');
 
-  // Eligibility is intentionally limited to the owner's four requested rules:
-  // 1) verified member of sourceGroup, 2) resolved WhatsApp identity,
-  // 3) not already in the owner's contacts, 4) no meaningful prior 1:1 interaction
-  // in the synchronized history.
   const members = await backend.getGroupMembers(rules.sourceGroup);
   const candidates: Array<{ id: string; displayName: string; firstName: string; historyCoverage: string }> = [];
   const skipped: Array<{ id: string; reason: string }> = [];
   const seen = new Set<string>();
 
-  const isMeaningful = (msg: { type: string; body: string; hasMedia: boolean }) => {
-    const type = (msg.type || '').toLowerCase();
-    if (['unknown', 'protocol', 'placeholder', 'secretencrypted'].includes(type)) return false;
-    return Boolean((msg.body || '').trim() || msg.hasMedia || [
-      'chat', 'image', 'video', 'audio', 'ptt', 'document', 'sticker',
-      'reaction', 'call_log', 'template', 'interactive',
-    ].includes(type));
-  };
-
   for (const m of members) {
     const id = canonical(m.id);
     if (seen.has(id)) continue;
     seen.add(id);
-
-    let reason = '';
-    if (!m.identityResolved) reason = 'unresolved_identity';
-    else if (!m.contact?.isUser || m.contact.isMe) reason = 'not_another_user';
-    else if (m.contact.isMyContact !== false) reason = 'already_in_contacts';
-    else {
-      const messages = await backend.getMessages(m.id, 1000);
-      if (messages.some(isMeaningful)) reason = 'prior_direct_interaction';
-    }
-
+    const reason = await memberRejectionReason(backend, store, m);
     if (reason) {
       skipped.push({ id: m.id, reason });
     } else {
-      const displayName = contactName(m.contact) || (m.contact?.number ? `+${m.contact.number}` : id.split('@')[0]!);
-      const firstName = contactName(m.contact)?.split(/\s+/)[0] || '';
       candidates.push({
-        id: m.id,
-        displayName,
-        firstName,
+        id,
+        ...memberDisplay(m),
         historyCoverage: 'Only synchronized history was searched; no meaningful prior 1:1 interaction was found.',
       });
     }
-
     if (candidates.length >= count || seen.size >= 300) break;
   }
 
   return {
-    candidates,
-    skipped,
-    scanned: seen.size,
-    requested: count,
-    completeArchive: false,
-    note: 'Eligibility uses only source-group membership, resolved identity, isMyContact=false, and no meaningful prior 1:1 interaction in synchronized history.',
+    candidates, skipped, scanned: seen.size, requested: count, completeArchive: false,
+    note: 'Verified source-group members can be contacted without a saved contact or profile name. Known saved contacts, previous direct interactions and recorded campaign sends remain excluded. Synchronized history may be incomplete.',
   };
 }

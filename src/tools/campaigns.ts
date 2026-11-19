@@ -2,7 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import type { WhatsAppBackend } from '../services/backend.js';
-import { CampaignStore, canonical, redactDraft, selectCandidates, type Draft } from '../services/campaigns.js';
+import { CampaignStore, redactDraft, selectCandidates, verifyCampaignRecipients, type Draft } from '../services/campaigns.js';
 
 const rulesSchema = z.object({
   sourceGroup: z.string().endsWith('@g.us'), excludeGroups: z.array(z.string().endsWith('@g.us')).max(20),
@@ -26,15 +26,10 @@ export function registerCampaignTools(server: McpServer, backend: WhatsAppBacken
     return backend.getGroupMembers(groupId);
   }));
   server.registerTool('search_chat_history', { description: 'Search up to 1000 available messages. No match does not prove absence from the full account history.', inputSchema: { chatId: z.string(), query: z.string().min(1).max(500) }, annotations: read }, ({ chatId, query }) => run(async () => ({ messages: (await backend.getMessages(chatId, 1000)).filter(m => m.body.toLowerCase().includes(query.toLowerCase())), completeArchive: false })));
-  server.registerTool('select_campaign_candidates', { description: 'Find proposed recipients, excluding saved/unknown contacts, excluded groups, missing names, unresolved identities and previous outbound messages. May return fewer than requested. Show every proposed recipient to the user.', inputSchema: { rules: rulesSchema, count: z.number().int().min(1).max(25) }, annotations: read }, ({ rules, count }) => run(() => selectCandidates(backend, store, rules, count)));
+  server.registerTool('select_campaign_candidates', { description: 'Find verified group members, including people without saved contacts or names. Excludes known saved contacts, unresolved identities and earlier direct outreach. Show every proposed recipient.', inputSchema: { rules: rulesSchema, count: z.number().int().min(1).max(25) }, annotations: read }, ({ rules, count }) => run(() => selectCandidates(backend, store, rules, count)));
 
-  const recheck = async (draft: Pick<Draft, 'rules' | 'recipients'>) => {
-    const result = await selectCandidates(backend, store, draft.rules, 25);
-    for (const r of draft.recipients) {
-      const candidate = result.candidates.find(c => canonical(c.id) === canonical(r.id));
-      if (!candidate || candidate.displayName !== r.displayName) throw new Error(`Recipient eligibility/name changed or cannot be confirmed: ${r.id}`);
-    }
-  };
+  const recheck = async (draft: Pick<Draft, 'rules' | 'recipients'>) =>
+    verifyCampaignRecipients(backend, store, draft.rules, draft.recipients);
   server.registerTool('preview_campaign_batch', { description: 'Persist an immutable draft with exact personalized text/image/URL-as-text steps. Sends nothing. Show all recipients and messages; the owner must approve through the protected browser page.', inputSchema: { rules: rulesSchema, recipients: z.array(z.object({ id: z.string(), displayName: z.string().min(1).max(200), steps: z.array(stepSchema).min(1).max(5) })).min(1).max(25) }, annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false } }, ({ rules, recipients }) => run(async () => {
     await recheck({ rules, recipients });
     const d = store.create(rules, recipients);
