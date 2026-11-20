@@ -93,6 +93,8 @@ export class AuctionBidderRegistry {
         ? '_We will notify you privately if you are outbid. Winning bid confirmed after auction closes._'
         : '_Minimum next bid: ' + (next === null ? 'subject to current bids' : sgd(next)) +
           '. To bid again, reply: Bid Lot ' + lot + ': ' + (next === null ? 'S$[amount]' : sgd(next)) + ' (or higher)._',
+      '', '_You can continue placing or increasing bids directly within this WhatsApp chat._',
+      '_This is a system-generated message from Calmistry._',
     ].join('\n');
     this.queue('confirmation', chatId, messageId, text, at);
     if (leading && previous && previous.chatId !== chatId && previousNumber) {
@@ -108,6 +110,8 @@ export class AuctionBidderRegistry {
         '',
         '_You have been outbid. Minimum next bid: ' + sgd(nextBid) +
           '. To bid again, reply: Bid Lot ' + lot + ': ' + sgd(nextBid) + ' (or higher)._',
+        '', '_You can increase your bid directly within this WhatsApp chat._',
+        '_This is a system-generated message from Calmistry._',
       ].join('\n');
       this.queue('outbid', previous.chatId, messageId, outbidText, at);
     }
@@ -124,7 +128,8 @@ export class AuctionBidderRegistry {
     this.queue('not_accepted',x.chatId,x.messageId,[
       '*BID NOT RECORDED — Lot '+x.lot+' · '+(x.lotName||'Auction item')+'*',
       '', 'Your offer: '+sgd(x.amount), 'Status: *Not accepted*', '',explanation,
-      '', '_No bid has been registered from this submission._'
+      '', '_No bid has been registered from this submission._',
+      '', '_This is a system-generated message from Calmistry._'
     ].join('\n'),x.at);
   }
 
@@ -137,7 +142,9 @@ export class AuctionBidderRegistry {
       '', 'Your recorded bid: '+sgd(x.recorded),'Bidder number: '+number,
       leading ? 'Status: *Highest bid*' : 'Status: *Not currently highest*',
       ...(!leading&&x.leader?['Current highest bid: *'+sgd(x.leader.amount)+'*']:[]),
-      '', '_This submission did not increase your recorded bid._'
+      '', '_This submission did not increase your recorded bid._',
+      '', '_You can increase your bid directly within this WhatsApp chat._',
+      '_This is a system-generated message from Calmistry._'
     ].join('\n'),x.at);
   }
 

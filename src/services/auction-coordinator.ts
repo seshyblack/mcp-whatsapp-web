@@ -18,7 +18,7 @@ export interface AuctionConfiguration {
 }
 
 export function auctionConfiguration(env: NodeJS.ProcessEnv = process.env): AuctionConfiguration {
-  const closeAt = env.AUCTION_END_AT ?? '2026-11-24T11:00:00+08:00';
+  const closeAt = env.AUCTION_END_AT ?? '2026-11-22T21:00:00+08:00';
   if (!Number.isFinite(Date.parse(closeAt))) throw new Error('AUCTION_END_AT must be an ISO date with timezone.');
   const channelJid = env.AUCTION_CHANNEL_JID?.trim();
   if (channelJid && !/^\d+@newsletter$/.test(channelJid)) throw new Error('AUCTION_CHANNEL_JID must be a confirmed @newsletter ID.');

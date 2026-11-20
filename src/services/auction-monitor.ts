@@ -214,6 +214,8 @@ export class AuctionSweepMonitor {
     this.starter = setTimeout(()=>{void this.sweep();},12_000);
     this.starter.unref?.();
     log.info('Calmistry two-minute auction monitor scheduled. Mode='+this.mode+', outbound='+ (this.mode==='live'&&this.notificationsEnabled));
+    // Review notice totals without logging customer identity or message bodies.
+    log.warn('Calmistry auction notice audit: '+JSON.stringify(this.bidders.status()));
   }
   stop(): void {
     this.stopped=true;
@@ -312,16 +314,30 @@ export class AuctionSweepMonitor {
         : Math.max(now-24*3600_000,last?last-10*60_000:now-3600_000);
       const chats=await this.whatsapp.listChats(1000,false);
       const recent=chats.filter(c=>!c.isGroup && /^\d+@(s\.whatsapp\.net|lid)$/.test(c.id) && c.timestamp*1000>=since);
-      if(recent.length>150) partial=true;
-      for(let i=0;i<Math.min(recent.length,150);i+=8){
-        await Promise.all(recent.slice(i,i+8).map(async c=>{
+      // Live bids are handled on receipt; reconciliation is bounded and rotates.
+      const SCAN_LIMIT=36;
+      const PARALLEL=3;
+      const priorCursor=Number(this.state('scan_cursor')||0);
+      const cursor=recent.length && Number.isSafeInteger(priorCursor) && priorCursor>=0
+        ? priorCursor % recent.length : 0;
+      const batch=recent.length<=SCAN_LIMIT ? recent
+        : [...recent.slice(cursor),...recent.slice(0,cursor)].slice(0,SCAN_LIMIT);
+      const completedCycle=recent.length<=SCAN_LIMIT || cursor+batch.length>=recent.length;
+      let scanFailure=false;
+      for(let i=0;i<batch.length;i+=PARALLEL){
+        await Promise.all(batch.slice(i,i+PARALLEL).map(async c=>{
           try{
-            const items=await this.whatsapp.getMessages(c.id,60);
+            const items=await this.whatsapp.getMessages(c.id,35);
             inspected++;
             for(const m of items) if(m.timestamp*1000>=since && this.record(m)) newBids++;
-          }catch(e){partial=true;log.warn('Auction chat could not be scanned',e);}
+          }catch(e){scanFailure=true;log.warn('Auction chat could not be scanned',e);}
         }));
       }
+      this.setState('scan_cursor',String(recent.length ? (cursor+batch.length)%recent.length : 0));
+      if(scanFailure) this.setState('scan_cycle_failed','1');
+      // Closing reports require a full successful reconciliation cycle.
+      partial=!completedCycle || this.state('scan_cycle_failed')==='1';
+      if(completedCycle) this.setState('scan_cycle_failed','0');
       await this.bidders.flush();
       await this.tests.flush();
       // No bidder messages after close. Only the owner receives one final report.

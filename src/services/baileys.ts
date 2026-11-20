@@ -181,9 +181,10 @@ export class BaileysService implements WhatsAppBackend {
           set: data => withCurrentAuth(() => state.keys.set(data)),
         },
       },
-      logger: log,
+      logger: log.child({ component: 'baileys' }, { level: 'silent' }),
       browser: process.platform === 'win32' ? Browsers.windows('Chrome') : Browsers.macOS('Chrome'),
-      syncFullHistory: true,
+      // Avoid full-history downloads on reconnect; existing SQLite history is retained.
+      syncFullHistory: process.env.BAILEYS_FULL_HISTORY_SYNC === 'true',
       markOnlineOnConnect: false,
       generateHighQualityLinkPreview: true,
       connectTimeoutMs: 30_000,
@@ -782,7 +783,7 @@ export class BaileysService implements WhatsAppBackend {
     const generation = this.generation;
     const socket = this.socket!;
     const stream = await (this.deps.downloadMedia ?? downloadMediaMessage)(raw, 'stream', {}, {
-      logger: log, reuploadRequest: message => {
+      logger: log.child({ component: 'baileys' }, { level: 'silent' }), reuploadRequest: message => {
         if (generation !== this.generation || this.stopped) throw new Error('WhatsApp disconnected during media download.');
         return socket.updateMediaMessage(message);
       },

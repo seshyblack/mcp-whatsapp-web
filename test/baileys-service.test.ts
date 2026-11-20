@@ -82,7 +82,7 @@ describe('Baileys lifecycle and authentication (offline)', () => {
     await Promise.all([service.initialize(), service.initialize(), service.initialize()]);
     expect(socketFactory).toHaveBeenCalledTimes(1);
     expect(configs[0].auth.keys).toBeDefined();
-    expect(configs[0].syncFullHistory).toBe(true);
+    expect(configs[0].syncFullHistory).toBe(false);
     expect(configs[0].markOnlineOnConnect).toBe(false);
     expect(service.isAuthenticated()).toBe(false);
   });

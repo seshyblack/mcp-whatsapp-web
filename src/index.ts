@@ -9,7 +9,11 @@ import util from 'util';
 // This is done unconditionally: it is equally correct for the HTTP transport.
 {
   const toStderr = (...args: unknown[]): void => {
-    process.stderr.write(util.format(...args) + '\n');
+    // Filter sensitive Signal session dumps before formatting any object.
+    if (args.some(arg => typeof arg === 'string' && /Removing old closed session|SessionEntry\s*\{/i.test(arg))) return;
+    const line = util.format(...args);
+    if (/\b(?:privKey|rootKey|ephemeralKeyPair|currentRatchet|remoteIdentityKey)\s*:/.test(line)) return;
+    process.stderr.write(line + '\n');
   };
   console.log = console.info = console.debug = console.warn = console.error = toStderr;
 }
