@@ -38,7 +38,7 @@ export function registerCampaignTools(server: McpServer, backend: WhatsAppBacken
   }, ({ max_chats, limit }) => run(async () => {
     const cutoff = Date.parse('2026-11-08T00:00:00+08:00') / 1000;
     const chats = (await backend.listChats(1000, false))
-      .filter(c => !c.isGroup && /^\\d+@(s\\.whatsapp\\.net|lid)$/.test(c.id)
+      .filter(c => !c.isGroup && /^\d+@(s\.whatsapp\.net|lid)$/.test(c.id)
         && c.timestamp >= cutoff)
       .slice(0, max_chats);
     const candidates: Array<{ chatId: string; name: string; repliedAt: string; positiveReply: string }> = [];
@@ -52,10 +52,10 @@ export function registerCampaignTools(server: McpServer, backend: WhatsAppBacken
       reviewed++;
       const ordered = messages.filter(m => m.timestamp >= cutoff && m.type !== 'call_log')
         .sort((a, b) => a.timestamp - b.timestamp);
-      if (ordered.some(m => /(?:\\*NEW BID|BID RECEIVED|OUTBID|Bid Lot\\s*\\d{1,2}|BID ALREADY RECORDED)/i.test(m.body))) continue;
+      if (ordered.some(m => /(?:\*NEW BID|BID RECEIVED|OUTBID|Bid Lot\s*\d{1,2}|BID ALREADY RECORDED)/i.test(m.body))) continue;
       const invitation = [...ordered].reverse().find(m => m.fromMe
-        && /(?:calmistry\\.space|private auction|calmistry.*auction|auction ends)/i.test(m.body)
-        && !/(?:reminder|closes.*9\\s*p\\.?m)/i.test(m.body));
+        && /(?:calmistry\.space|private auction|calmistry.*auction|auction ends)/i.test(m.body)
+        && !/(?:reminder|closes.*9\s*p\.?m)/i.test(m.body));
       if (!invitation) continue;
       const replies = ordered.filter(m => !m.fromMe && m.timestamp >= invitation.timestamp);
       if (!replies.length) continue;
@@ -65,7 +65,7 @@ export function registerCampaignTools(server: McpServer, backend: WhatsAppBacken
         /(?:i(?:'|’)ll (?:have a look|take a look|check)|i will (?:have a look|take a look|check)|will check|will (?:take|have) a look|yes(?:,| )? sure|sure,? (?:will|i(?:'|’)ll)|i(?:'|’)d love|sounds (?:great|good|interesting)|interested|when (?:are you|can i)|where (?:is|are)|how (?:do i|can i))/i.test(m.body));
       if (!positive) continue;
       const reminder = ordered.some(m => m.fromMe && m.timestamp > positive.timestamp
-        && /(?:little reminder|final reminder|auction closes.*9\\s*p\\.?m|ends.*sunday.*9\\s*p\\.?m)/i.test(m.body));
+        && /(?:little reminder|final reminder|auction closes.*9\s*p\.?m|ends.*sunday.*9\s*p\.?m)/i.test(m.body));
       if (reminder) continue;
       candidates.push({
         chatId: chat.id, name: chat.name || chat.id.split('@')[0]!,
