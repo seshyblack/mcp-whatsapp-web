@@ -26,6 +26,60 @@ export function registerCampaignTools(server: McpServer, backend: WhatsAppBacken
     return backend.getGroupMembers(groupId);
   }));
   server.registerTool('search_chat_history', { description: 'Search up to 1000 available messages. No match does not prove absence from the full account history.', inputSchema: { chatId: z.string(), query: z.string().min(1).max(500) }, annotations: read }, ({ chatId, query }) => run(async () => ({ messages: (await backend.getMessages(chatId, 1000)).filter(m => m.body.toLowerCase().includes(query.toLowerCase())), completeArchive: false })));
+  // Follow-up selection is intentionally separate from cold-outreach eligibility.
+  // Read-only preview: no sending, approvals, scheduling or recipient mutation.
+  server.registerTool('preview_auction_positive_followups', {
+    description: 'Preview Calmistry auction contacts who replied positively to a previous personal invitation. Reads bounded recent chats, excludes bidders/declines/previous closing reminders; never sends. Owner verifies exact recipients before a follow-up.',
+    inputSchema: {
+      max_chats: z.number().int().min(1).max(120).default(80),
+      limit: z.number().int().min(1).max(30).default(25),
+    },
+    annotations: read,
+  }, ({ max_chats, limit }) => run(async () => {
+    const cutoff = Date.parse('2026-11-08T00:00:00+08:00') / 1000;
+    const chats = (await backend.listChats(1000, false))
+      .filter(c => !c.isGroup && /^\\d+@(s\\.whatsapp\\.net|lid)$/.test(c.id)
+        && c.timestamp >= cutoff)
+      .slice(0, max_chats);
+    const candidates: Array<{ chatId: string; name: string; repliedAt: string; positiveReply: string }> = [];
+    let reviewed = 0;
+    let unavailable = 0;
+    for (const chat of chats) {
+      if (candidates.length >= limit) break;
+      let messages;
+      try { messages = await backend.getMessages(chat.id, 25); }
+      catch { unavailable++; continue; }
+      reviewed++;
+      const ordered = messages.filter(m => m.timestamp >= cutoff && m.type !== 'call_log')
+        .sort((a, b) => a.timestamp - b.timestamp);
+      if (ordered.some(m => /(?:\\*NEW BID|BID RECEIVED|OUTBID|Bid Lot\\s*\\d{1,2}|BID ALREADY RECORDED)/i.test(m.body))) continue;
+      const invitation = [...ordered].reverse().find(m => m.fromMe
+        && /(?:calmistry\\.space|private auction|calmistry.*auction|auction ends)/i.test(m.body)
+        && !/(?:reminder|closes.*9\\s*p\\.?m)/i.test(m.body));
+      if (!invitation) continue;
+      const replies = ordered.filter(m => !m.fromMe && m.timestamp >= invitation.timestamp);
+      if (!replies.length) continue;
+      const latest = replies[replies.length - 1]!;
+      if (/(?:not interested|not keen|please stop|unsubscribe|don't message|do not message|no thanks|won't be able)/i.test(latest.body)) continue;
+      const positive = replies.find(m =>
+        /(?:i(?:'|’)ll (?:have a look|take a look|check)|i will (?:have a look|take a look|check)|will check|will (?:take|have) a look|yes(?:,| )? sure|sure,? (?:will|i(?:'|’)ll)|i(?:'|’)d love|sounds (?:great|good|interesting)|interested|when (?:are you|can i)|where (?:is|are)|how (?:do i|can i))/i.test(m.body));
+      if (!positive) continue;
+      const reminder = ordered.some(m => m.fromMe && m.timestamp > positive.timestamp
+        && /(?:little reminder|final reminder|auction closes.*9\\s*p\\.?m|ends.*sunday.*9\\s*p\\.?m)/i.test(m.body));
+      if (reminder) continue;
+      candidates.push({
+        chatId: chat.id, name: chat.name || chat.id.split('@')[0]!,
+        repliedAt: new Date(positive.timestamp * 1000).toISOString(),
+        positiveReply: positive.body.slice(0, 200),
+      });
+    }
+    return {
+      candidates, scannedChats: chats.length, readChats: reviewed, unavailableChats: unavailable,
+      completeArchive: false, noMessagesSent: true,
+      note: 'Preview only. Positive responses are heuristic, and only synchronized recent history was reviewed. Verify all conversations and exclude opt-outs before sending; do not reuse cold-outreach campaign rules.',
+    };
+  }));
+
   server.registerTool('select_campaign_candidates', { description: 'Find verified group members, including people without saved contacts or names. Excludes known saved contacts, unresolved identities and earlier direct outreach. Show every proposed recipient.', inputSchema: { rules: rulesSchema, count: z.number().int().min(1).max(25) }, annotations: read }, ({ rules, count }) => run(() => selectCandidates(backend, store, rules, count)));
 
   const recheck = async (draft: Pick<Draft, 'rules' | 'recipients'>) =>
